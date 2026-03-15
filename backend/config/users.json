@@ -1,0 +1,12 @@
+[
+  {
+    "id": "user_1773560531876",
+    "username": "test@example.com",
+    "password": "$2b$10$816qXvw9UK1HchBLhYRSCOmoC4NOJeOXahlrRag1MXk0SczygiUs."
+  },
+  {
+    "id": "user_1773614512620",
+    "username": "1234",
+    "password": "$2b$10$y1gMAJ7S5ruNiQ0qQvjZc.SEr82DO4L4itr5xAPumQkAIk2YqMsce"
+  }
+]
