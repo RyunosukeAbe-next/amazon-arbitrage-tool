@@ -1,5 +1,215 @@
 [
   {
+    "id": "log_1773884882739",
+    "createdAt": "2026-03-19T01:48:02.739Z",
+    "searchType": "asin",
+    "query": "B00PG5FHCU",
+    "resultCount": 1
+  },
+  {
+    "id": "log_1773884689629",
+    "createdAt": "2026-03-19T01:44:49.629Z",
+    "searchType": "asin",
+    "query": "B00PG5FHCU",
+    "resultCount": 1
+  },
+  {
+    "id": "log_1773818472611",
+    "createdAt": "2026-03-18T07:21:12.611Z",
+    "searchType": "seller",
+    "query": "A2W0TEJ3MK1XP5",
+    "resultCount": 50
+  },
+  {
+    "id": "log_1773809896381",
+    "createdAt": "2026-03-18T04:58:16.381Z",
+    "searchType": "seller",
+    "query": "A2W0TEJ3MK1XP5",
+    "resultCount": 50
+  },
+  {
+    "id": "log_1773807025517",
+    "createdAt": "2026-03-18T04:10:25.517Z",
+    "searchType": "asin",
+    "query": "B00PG5FHCU",
+    "resultCount": 1
+  },
+  {
+    "id": "log_1773767426870",
+    "createdAt": "2026-03-17T17:10:26.870Z",
+    "searchType": "asin",
+    "query": "B00PG5FHCU",
+    "resultCount": 1
+  },
+  {
+    "id": "log_1773767077184",
+    "createdAt": "2026-03-17T17:04:37.184Z",
+    "searchType": "keyword",
+    "query": "japan import",
+    "resultCount": 1000
+  },
+  {
+    "id": "log_1773766188367",
+    "createdAt": "2026-03-17T16:49:48.367Z",
+    "searchType": "seller",
+    "query": "\tA2W0TEJ3MK1XP5",
+    "resultCount": 50
+  },
+  {
+    "id": "log_1773765934620",
+    "createdAt": "2026-03-17T16:45:34.620Z",
+    "searchType": "seller",
+    "query": "A2W0TEJ3MK1XP5",
+    "resultCount": 0
+  },
+  {
+    "id": "log_1773765795083",
+    "createdAt": "2026-03-17T16:43:15.083Z",
+    "searchType": "seller",
+    "query": "A2W0TEJ3MK1XP5",
+    "resultCount": 0
+  },
+  {
+    "id": "log_1773765666070",
+    "createdAt": "2026-03-17T16:41:06.070Z",
+    "searchType": "seller",
+    "query": "A2W0TEJ3MK1XP5",
+    "resultCount": 0
+  },
+  {
+    "id": "log_1773765437625",
+    "createdAt": "2026-03-17T16:37:17.625Z",
+    "searchType": "seller",
+    "query": "\tA2W0TEJ3MK1XP5",
+    "resultCount": 0
+  },
+  {
+    "id": "log_1773765141060",
+    "createdAt": "2026-03-17T16:32:21.060Z",
+    "searchType": "seller",
+    "query": "A2W0TEJ3MK1XP5",
+    "resultCount": 0
+  },
+  {
+    "id": "log_1773764785902",
+    "createdAt": "2026-03-17T16:26:25.902Z",
+    "searchType": "seller",
+    "query": "A2W0TEJ3MK1XP5",
+    "resultCount": 0
+  },
+  {
+    "id": "log_1773764622201",
+    "createdAt": "2026-03-17T16:23:42.202Z",
+    "searchType": "seller",
+    "query": "A2W0TEJ3MK1XP5",
+    "resultCount": 0
+  },
+  {
+    "id": "log_1773764462846",
+    "createdAt": "2026-03-17T16:21:02.846Z",
+    "searchType": "seller",
+    "query": "\tA2W0TEJ3MK1XP5",
+    "resultCount": 0
+  },
+  {
+    "id": "log_1773762268684",
+    "createdAt": "2026-03-17T15:44:28.684Z",
+    "searchType": "seller",
+    "query": "\tA2W0TEJ3MK1XP5",
+    "resultCount": 0
+  },
+  {
+    "id": "log_1773762085769",
+    "createdAt": "2026-03-17T15:41:25.769Z",
+    "searchType": "seller",
+    "query": "A2W0TEJ3MK1XP5",
+    "resultCount": 0
+  },
+  {
+    "id": "log_1773761872596",
+    "createdAt": "2026-03-17T15:37:52.596Z",
+    "searchType": "seller",
+    "query": "A2W0TEJ3MK1XP5",
+    "resultCount": 0
+  },
+  {
+    "id": "log_1773761687812",
+    "createdAt": "2026-03-17T15:34:47.812Z",
+    "searchType": "seller",
+    "query": "A2W0TEJ3MK1XP5",
+    "resultCount": 0
+  },
+  {
+    "id": "log_1773761467476",
+    "createdAt": "2026-03-17T15:31:07.476Z",
+    "searchType": "seller",
+    "query": "A2W0TEJ3MK1XP5",
+    "resultCount": 0
+  },
+  {
+    "id": "log_1773761325018",
+    "createdAt": "2026-03-17T15:28:45.018Z",
+    "searchType": "seller",
+    "query": "\tA2W0TEJ3MK1XP5",
+    "resultCount": 0
+  },
+  {
+    "id": "log_1773761107622",
+    "createdAt": "2026-03-17T15:25:07.622Z",
+    "searchType": "seller",
+    "query": "\tA2W0TEJ3MK1XP5",
+    "resultCount": 0
+  },
+  {
+    "id": "log_1773760320078",
+    "createdAt": "2026-03-17T15:12:00.078Z",
+    "searchType": "seller",
+    "query": "A2W0TEJ3MK1XP5",
+    "resultCount": 50
+  },
+  {
+    "id": "log_1773759009248",
+    "createdAt": "2026-03-17T14:50:09.248Z",
+    "searchType": "seller",
+    "query": "A2W0TEJ3MK1XP5",
+    "resultCount": 50
+  },
+  {
+    "id": "log_1773758483915",
+    "createdAt": "2026-03-17T14:41:23.915Z",
+    "searchType": "seller",
+    "query": "A2W0TEJ3MK1XP5",
+    "resultCount": 0
+  },
+  {
+    "id": "log_1773757577439",
+    "createdAt": "2026-03-17T14:26:17.439Z",
+    "searchType": "seller",
+    "query": "A2W0TEJ3MK1XP5",
+    "resultCount": 0
+  },
+  {
+    "id": "log_1773757311776",
+    "createdAt": "2026-03-17T14:21:51.776Z",
+    "searchType": "seller",
+    "query": "A2W0TEJ3MK1XP",
+    "resultCount": 0
+  },
+  {
+    "id": "log_1773756940140",
+    "createdAt": "2026-03-17T14:15:40.140Z",
+    "searchType": "seller",
+    "query": "A2W0TEJ3MK1XP5",
+    "resultCount": 0
+  },
+  {
+    "id": "log_1773756507966",
+    "createdAt": "2026-03-17T14:08:27.966Z",
+    "searchType": "keyword",
+    "query": "doragon ball",
+    "resultCount": 2
+  },
+  {
     "id": "log_1773617435623",
     "createdAt": "2026-03-15T23:30:35.623Z",
     "searchType": "seller",

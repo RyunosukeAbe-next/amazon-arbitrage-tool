@@ -87,8 +87,31 @@ async function removeTrackedListing(userId, sku, marketplaceId) {
   await saveTrackedListings(userId, listings);
 }
 
+/**
+ * ASINとユーザーIDから出品中のSKUを取得する
+ * @param {string} userId
+ * @param {string} asin
+ * @returns {Promise<object|undefined>} 該当する出品情報があればオブジェクト、なければundefined
+ */
+async function getTrackedListingByAsin(userId, asin) {
+    const listings = await loadTrackedListings(userId);
+    return listings.find(listing => listing.asin === asin);
+}
+
+/**
+ * ユーザーの全ての出品中リストを取得する
+ * @param {string} userId
+ * @returns {Promise<object[]>} 全ての出品情報
+ */
+async function getAllTrackedListings(userId) {
+    return loadTrackedListings(userId);
+}
+
 module.exports = {
   loadTrackedListings,
+  saveTrackedListings, // saveTrackedListingsもエクスポートに追加
   addTrackedListing,
   removeTrackedListing,
+  getTrackedListingByAsin, // 追加
+  getAllTrackedListings,    // 追加
 };

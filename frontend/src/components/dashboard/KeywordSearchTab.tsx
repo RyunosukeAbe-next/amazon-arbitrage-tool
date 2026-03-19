@@ -1,19 +1,8 @@
 import React, { useState } from 'react';
 import {
   Typography, TextField, Button, Box, FormControl,
-  InputLabel, Select, MenuItem, CircularProgress, Alert
+  InputLabel, Select, MenuItem
 } from '@mui/material';
-import api from '../../services/api';
-
-// ProductResult 型定義をここに追加
-interface ProductResult {
-  asin: string;
-  itemName: string;
-  usPrice: number;
-  jpPrice: number;
-  usSellerCount: number;
-  // 他にも表示したいプロパティがあればここに追加
-}
 
 // TODO: 共有ファイルに移動する
 const amazonCategories = [
@@ -53,39 +42,30 @@ const amazonCategories = [
 ];
 
 interface KeywordSearchTabProps {
-  onSearchComplete: (results: ProductResult[]) => void; // ★ 変更: 引数を受け取るように
+  onAddToQueue: (name: string, params: any) => void;
 }
 
-const KeywordSearchTab: React.FC<KeywordSearchTabProps> = ({ onSearchComplete }) => {
+const KeywordSearchTab: React.FC<KeywordSearchTabProps> = ({ onAddToQueue }) => {
   const [keyword, setKeyword] = useState('');
   const [majorCategoryId, setMajorCategoryId] = useState('');
   const [minorCategoryId, setMinorCategoryId] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [message, setMessage] = useState('');
 
-  const handleSearch = async () => {
-    setLoading(true);
-    setMessage('');
-    try {
-      const params: { searchType: string; query: string; classificationId?: string } = {
-        searchType: 'keyword',
-        query: keyword,
-      };
-      if (minorCategoryId) {
-        params.classificationId = minorCategoryId;
-      } else if (majorCategoryId) {
-        params.classificationId = majorCategoryId;
-      }
-
-      const response = await api.get('/search', { params });
-      setMessage(response.data.message);
-      // ★ 変更: 検索結果を onSearchComplete に渡す
-      onSearchComplete(response.data.products || []);
-    } catch (err: any) {
-      setMessage(err.response?.data?.error || 'リサーチ中にエラーが発生しました。');
-    } finally {
-      setLoading(false);
+  const handleSearch = () => {
+    const params: { searchType: string; query: string; classificationId?: string } = {
+      searchType: 'keyword',
+      query: keyword,
+    };
+    if (minorCategoryId) {
+      params.classificationId = minorCategoryId;
+    } else if (majorCategoryId) {
+      params.classificationId = majorCategoryId;
     }
+    
+    const categoryName = amazonCategories.find(c => c.id === majorCategoryId)?.name || '';
+    const subCategoryName = amazonCategories.find(c => c.id === majorCategoryId)?.sub.find(sc => sc.id === minorCategoryId)?.name || '';
+    const jobName = `キーワード: ${keyword}` + (categoryName ? ` (${categoryName}${subCategoryName ? ' > ' + subCategoryName : ''})` : '');
+
+    onAddToQueue(jobName, params);
   };
 
   return (
@@ -114,12 +94,11 @@ const KeywordSearchTab: React.FC<KeywordSearchTabProps> = ({ onSearchComplete })
           <TextField label="キーワード" fullWidth value={keyword} onChange={(e) => setKeyword(e.target.value)} />
         </Box>
         <Box>
-          <Button variant="contained" onClick={handleSearch} disabled={loading || !keyword}>
-            {loading ? <CircularProgress size={24} /> : '検索実行'}
+          <Button variant="contained" onClick={handleSearch} disabled={!keyword}>
+            検索実行
           </Button>
         </Box>
       </Box>
-      {message && <Alert severity={message.includes('エラー') ? 'error' : 'info'} sx={{ mt: 2 }}>{message}</Alert>}
     </>
   );
 };

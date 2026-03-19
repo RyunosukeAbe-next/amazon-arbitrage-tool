@@ -8,75 +8,35 @@ const KEEPA_API_ENDPOINT = 'https://api.keepa.com';
  * @param {string} marketplaceDomain (e.g., 'com', 'co.jp')
  * @returns {Promise<string[]>} ASINの配列
  */
+
 async function getASINsBySellerId(sellerId, marketplaceDomain = 'com') {
   const apiKey = process.env.KEEPA_API_KEY;
   if (!apiKey) {
-    throw new Error('Keepa APIキーが.envファイルに設定されていません。');
+    throw new Error('Keepa APIキーが設定されていません。');
   }
 
-  const domainMap = {
-    'com': 1,
-    'co.jp': 10,
-  };
+  const domainMap = { 'com': 1, 'co.jp': 10 };
   const domainId = domainMap[marketplaceDomain] || 1;
-
-  console.log(`Keepa API: Getting ASINs for seller ${sellerId} on domain ${marketplaceDomain}`);
+  const cleanSellerId = sellerId.trim();
 
   try {
-    const response = await axios.get(KEEPA_API_ENDPOINT + '/seller', {
-      params: {
-        key: apiKey,
-        domain: domainId,
-        seller: sellerId,
-      }
+    // 修正ポイント：axios.get を axios.post に変更し、大量のASIN取得に対応させます
+    const response = await axios.post(`${KEEPA_API_ENDPOINT}/query?key=${apiKey}&domain=${domainId}`, {
+      "seller": [cleanSellerId]
     });
 
-    // Keepa APIのレスポンスは、トークンが枯渇した場合などもエラーではなくステータスコード200で返ってくることがある
-    if (response.data && response.data.error) {
-        console.error('Keepa API Error:', response.data.error.message);
-        throw new Error(`Keepa API Error: ${response.data.error.message}`);
+    if (response.data && response.data.asinList) {
+      // 修正ポイント：取得件数を 150件（必要に応じて調整）に増やします
+      const activeAsins = response.data.asinList.slice(0, 10000); 
+      console.log(`[SUCCESS] Keepa API: Found ${response.data.asinList.length} ASINs. Using first ${activeAsins.length}.`);
+      return activeAsins;
     }
 
-    if (response.data && response.data.sellerAsins) {
-      console.log(`Keepa API: Found ${response.data.sellerAsins.length} ASINs.`);
-      return response.data.sellerAsins;
-    }
-
-    console.log('Keepa API: No ASINs found for the seller.');
+    console.log(`[INFO] Keepa API: No ASINs found for ${cleanSellerId}.`);
     return [];
-
   } catch (error) {
-    // axiosのエラーハンドリング
-    if (error.isAxiosError) {
-        console.error('Keepa APIへのリクエスト中にエラーが発生しました:', error.response?.data || error.message);
-    } else {
-        console.error('予期せぬエラーが発生しました:', error);
-    }
-    throw error;
+    console.error('[ERROR] Keepa API:', error.response?.data || error.message);
+    return [];
   }
 }
-
-module.exports = {
-  getASINsBySellerId,
-};
-
-// for testing (一時的なコード)
-(async () => {
-    try {
-        console.log('--- Keepa API Self-Test Started ---');
-        const testSellerId = 'A3C2A1P57W82K1'; // AnkerDirectのセラーID (例)
-        const testMarketplace = 'com';
-        console.log(`Self-Testing Keepa API with seller ID: ${testSellerId} on domain: ${testMarketplace}`);
-
-        const testAsins = await module.exports.getASINsBySellerId(testSellerId, testMarketplace); // module.exports経由で呼び出し
-        console.log(`Self-Test Result: Found ${testAsins.length} ASINs for ${testSellerId}`);
-        if (testAsins.length > 0) {
-            console.log('First 5 ASINs:', testAsins.slice(0, 5));
-        } else {
-            console.log('No ASINs found in self-test.');
-        }
-        console.log('--- Keepa API Self-Test Finished ---');
-    } catch (error) {
-        console.error('--- Keepa API Self-Test Failed ---', error);
-    }
-})();
+module.exports = { getASINsBySellerId }

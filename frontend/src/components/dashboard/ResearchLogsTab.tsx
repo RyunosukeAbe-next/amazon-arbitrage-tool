@@ -1,25 +1,28 @@
 import React, { useState, useEffect } from 'react';
 import { 
   Typography, Box, Table, TableBody, TableCell, TableContainer, 
-  TableHead, TableRow, Paper, Button, Modal, Alert, CircularProgress 
+  TableHead, TableRow, Paper, Button, Modal, Alert, CircularProgress, Chip 
 } from '@mui/material';
 import api from '../../services/api';
 import { Product, ResearchLog } from '../../types';
+import { SearchJob, SearchJobStatus } from '../../pages/DashboardPage';
 
-const ResearchLogsTab: React.FC = () => {
+interface ResearchLogsTabProps {
+  activeJobs: SearchJob[];
+  onCancelJob: (jobId: string) => void;
+}
+
+const ResearchLogsTab: React.FC<ResearchLogsTabProps> = ({ activeJobs, onCancelJob }) => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [researchLogs, setResearchLogs] = useState<ResearchLog[]>([]);
   const [selectedLogDetails, setSelectedLogDetails] = useState<Product[] | null>(null);
   const [isLogDetailModalOpen, setIsLogDetailModalOpen] = useState(false);
-  const [downloading, setDownloading] = useState<string | null>(null); // logIdを保持
-
-  useEffect(() => {
-    fetchResearchLogs();
-  }, []);
+  const [downloading, setDownloading] = useState<string | null>(null);
 
   const fetchResearchLogs = async () => {
     setLoading(true);
+    setError('');
     try {
       const response = await api.get('/research-logs');
       setResearchLogs(response.data);
@@ -29,6 +32,10 @@ const ResearchLogsTab: React.FC = () => {
       setLoading(false);
     }
   };
+  
+  useEffect(() => {
+    fetchResearchLogs();
+  }, []);
 
   const handleShowLogDetails = async (logId: string) => {
     setLoading(true);
@@ -45,6 +52,7 @@ const ResearchLogsTab: React.FC = () => {
 
   const handleDownloadLogCsv = async (logId: string) => {
     setDownloading(logId);
+    setError('');
     try {
       const response = await api.post('/download-csv', { logId }, { responseType: 'blob' });
       const url = window.URL.createObjectURL(new Blob([response.data]));
@@ -65,6 +73,7 @@ const ResearchLogsTab: React.FC = () => {
   const handleDeleteLog = async (logId: string) => {
     if (!window.confirm('このログを本当に削除しますか？')) return;
     setLoading(true);
+    setError('');
     try {
       await api.delete(`/research-logs/${logId}`);
       await fetchResearchLogs();
@@ -75,32 +84,67 @@ const ResearchLogsTab: React.FC = () => {
     }
   };
 
+  const renderStatus = (status: SearchJobStatus) => {
+    switch (status) {
+      case 'fetching':
+        return <Chip label="取得中" color="primary" size="small" icon={<CircularProgress size={14} color="inherit" />} />;
+      case 'waiting':
+        return <Chip label="待機中" color="default" size="small" />;
+      case 'completed':
+        return <Chip label="取得完了" color="success" variant="outlined" size="small" />;
+      case 'error':
+        return <Chip label="エラー" color="error" size="small" />;
+      default:
+        return <Chip label={status} size="small" />;
+    }
+  };
+
   return (
     <>
       <Typography variant="h5" gutterBottom>リサーチログ</Typography>
       {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
-      {loading && <CircularProgress sx={{ mb: 2 }} />}
-      <Button onClick={fetchResearchLogs} sx={{ mb: 2 }}>ログを更新</Button>
+      <Button onClick={fetchResearchLogs} sx={{ mb: 2 }} disabled={loading}>
+        {loading ? <CircularProgress size={24} /> : 'ログを更新'}
+      </Button>
       
       <TableContainer component={Paper}>
-        <Table>
+        <Table stickyHeader>
           <TableHead>
             <TableRow>
-              <TableCell>実行日時</TableCell>
-              <TableCell>検索タイプ</TableCell>
-              <TableCell>検索クエリ</TableCell>
-              <TableCell>カテゴリ</TableCell>
-              <TableCell align="right">ヒット件数</TableCell>
-              <TableCell align="center">操作</TableCell>
+              <TableCell sx={{width: '15%'}}>実行日時</TableCell>
+              <TableCell sx={{width: '15%'}}>ステータス</TableCell>
+              <TableCell>検索クエリ/ジョブ名</TableCell>
+              <TableCell align="right" sx={{width: '10%'}}>ヒット件数</TableCell>
+              <TableCell align="center" sx={{width: '20%'}}>操作</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
+            {/* Active Jobs */}
+            {activeJobs.map((job) => (
+              <TableRow key={job.id} sx={{ backgroundColor: job.status === 'error' ? 'rgba(255, 0, 0, 0.05)' : 'inherit' }}>
+                <TableCell>{new Date(job.id.split('-')[0]).toLocaleString()}</TableCell>
+                <TableCell>{renderStatus(job.status)}</TableCell>
+                <TableCell>
+                  {job.name}
+                  {job.status === 'error' && <Typography variant="caption" color="error.main" display="block">{job.message}</Typography>}
+                </TableCell>
+                <TableCell align="right">-</TableCell>
+                <TableCell align="center">
+                  {(job.status === 'waiting' || job.status === 'fetching' || job.status === 'error') && (
+                    <Button size="small" variant="outlined" color="warning" onClick={() => onCancelJob(job.id)}>
+                      削除
+                    </Button>
+                  )}
+                </TableCell>
+              </TableRow>
+            ))}
+            
+            {/* Historical Logs */}
             {researchLogs.map((log) => (
               <TableRow key={log.id} hover>
                 <TableCell>{new Date(log.createdAt).toLocaleString()}</TableCell>
-                <TableCell>{log.searchType}</TableCell>
-                <TableCell>{log.query}</TableCell>
-                <TableCell>{log.classification?.name || 'N/A'}</TableCell>
+                <TableCell>{renderStatus('completed')}</TableCell>
+                <TableCell>{log.query || 'N/A'}</TableCell>
                 <TableCell align="right">{log.resultCount}</TableCell>
                 <TableCell align="center">
                   <Box sx={{ display: 'flex', gap: 1, justifyContent: 'center' }}>
@@ -117,6 +161,7 @@ const ResearchLogsTab: React.FC = () => {
         </Table>
       </TableContainer>
 
+      {/* Modal */}
       <Modal open={isLogDetailModalOpen} onClose={() => setIsLogDetailModalOpen(false)}>
         <Box sx={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', width: '90%', bgcolor: 'background.paper', border: '2px solid #000', boxShadow: 24, p: 4 }}>
           <Typography variant="h6" component="h2">リサーチ結果詳細</Typography>

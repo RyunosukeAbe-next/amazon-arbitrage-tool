@@ -1,30 +1,31 @@
 import React, { useState } from 'react';
 import { 
-  Typography, TextField, Button, Box, Paper, Alert, CircularProgress 
+  Typography, TextField, Button, Box, Alert, CircularProgress 
 } from '@mui/material';
 import api from '../../services/api';
 
 const BulkListingTab: React.FC = () => {
-  const [bulkAsins, setBulkAsins] = useState('');
-  const [bulkListingResult, setBulkListingResult] = useState('');
+  const [asinsToSubmit, setAsinsToSubmit] = useState('');
+  const [jobTitle, setJobTitle] = useState('');
+  const [apiMessage, setApiMessage] = useState<{type: 'success' | 'error', text: string} | null>(null);
   const [loading, setLoading] = useState(false);
 
-  const handleBulkListing = async () => {
+  const handleStartAutoListing = async () => {
     setLoading(true);
-    setBulkListingResult('');
+    setApiMessage(null);
     try {
-      const asins = bulkAsins.split('\n').map(asin => asin.trim()).filter(asin => asin !== '');
+      const asins = asinsToSubmit.split(/[\s,]+/).map(asin => asin.trim()).filter(asin => asin !== '');
       if (asins.length === 0) {
-        setBulkListingResult('ASINが入力されていません。');
+        setApiMessage({ type: 'error', text: 'ASINが入力されていません。' });
         setLoading(false);
         return;
       }
       
-      const response = await api.post('/bulk-listing', { asins });
-      setBulkListingResult(response.data.details || '処理が完了しました。');
+      const response = await api.post('/bulk-listing-from-asins', { asins, title: jobTitle });
+      setApiMessage({ type: 'success', text: response.data.message || '処理の受付が完了しました。出品ログを確認してください。' });
 
     } catch (err: any) {
-      setBulkListingResult(`エラー: ${err.response?.data?.error || '一括出品処理中にエラーが発生しました。'}`);
+      setApiMessage({ type: 'error', text: `エラー: ${err.response?.data?.error || '自動出品の開始に失敗しました。'}`});
     } finally {
       setLoading(false);
     }
@@ -33,38 +34,44 @@ const BulkListingTab: React.FC = () => {
   return (
     <>
       <Typography variant="h5" component="h2" gutterBottom>
-        一括出品
+        ASINリストから自動出品
+      </Typography>
+      <Typography variant="body1" color="text.secondary" sx={{ mb: 2 }}>
+        CSVなどからコピーしたASINのリストを貼り付けて、設定に基づいたフィルタリングと自動出品を開始します。
       </Typography>
       <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, mb: 2 }}>
         <TextField
-          label="ASINリスト (1行に1ASIN)"
+          label="出品ジョブのタイトル (任意)"
+          variant="outlined"
+          fullWidth
+          value={jobTitle}
+          onChange={(e) => setJobTitle(e.target.value)}
+        />
+        <TextField
+          label="ASINリスト (カンマやスペース、改行区切りで複数可)"
           variant="outlined"
           multiline
           rows={10}
           fullWidth
-          value={bulkAsins}
-          onChange={(e) => setBulkAsins(e.target.value)}
+          value={asinsToSubmit}
+          onChange={(e) => setAsinsToSubmit(e.target.value)}
           placeholder="ここにASINを貼り付けます..."
         />
         <Box>
           <Button 
             variant="contained" 
-            onClick={handleBulkListing} 
-            disabled={loading || !bulkAsins.trim()}
+            color="primary"
+            onClick={handleStartAutoListing} 
+            disabled={loading || !asinsToSubmit.trim()}
           >
-            {loading ? <CircularProgress size={24} /> : '一括出品を実行'}
+            {loading ? <CircularProgress size={24} /> : '自動出品を開始'}
           </Button>
         </Box>
       </Box>
-      {bulkListingResult && (
-        <Box sx={{ mt: 2 }}>
-          <Typography variant="h6">処理結果:</Typography>
-          <Paper sx={{ p: 2, maxHeight: 300, overflow: 'auto', whiteSpace: 'pre-wrap', backgroundColor: '#f5f5f5' }}>
-            <Typography component="pre" variant="body2">
-              {bulkListingResult}
-            </Typography>
-          </Paper>
-        </Box>
+      {apiMessage && (
+        <Alert severity={apiMessage.type} sx={{ mt: 2 }}>
+          {apiMessage.text}
+        </Alert>
       )}
     </>
   );

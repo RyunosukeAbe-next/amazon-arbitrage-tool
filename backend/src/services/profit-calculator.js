@@ -3,6 +3,21 @@
 
 function calculateProfit(product, settings) {
   const { usPrice, jpPrice } = product;
+  
+  // ★ 追加: 日本価格が0以下の場合は、利益0として計算を終了する
+  if (!jpPrice || jpPrice <= 0) {
+    return {
+      profitJpy: 0,
+      profitRate: 0,
+      procurementCostJpy: 0,
+      internationalShippingCostJpy: 0,
+      customsDutyJpy: 0,
+      amazonFeeJpy: 0,
+      sellingPriceJpy: 0,
+      totalCostJpy: 0,
+    };
+  }
+
   const {
     internationalShippingRatePerKg,
     domesticShippingCostPerItem,
@@ -12,16 +27,15 @@ function calculateProfit(product, settings) {
   } = settings;
 
   // 0. 重量計算 (今回は簡単のため固定値またはダミーとする)
-  // 実際のツールでは、SP-APIから取得した商品の重量や体積重量に基づいて計算する
   const itemWeightKg = product.weight || 0.5; // 例: 0.5kgと仮定
 
   // 1. 仕入れコスト (日本円)
   const procurementCostJpy = jpPrice;
 
-  // 2. 国際送料 (日本円) - 例: 商品重量1kgあたり国際送料
+  // 2. 国際送料 (日本円)
   const internationalShippingCostJpy = internationalShippingRatePerKg * itemWeightKg;
 
-  // 3. 関税 (日本円) - 例: 仕入れ価格 + 国際送料に対して関税率を適用
+  // 3. 関税 (日本円)
   const dutiableValueJpy = procurementCostJpy + internationalShippingCostJpy;
   const customsDutyJpy = dutiableValueJpy * customsDutyRate;
 
@@ -29,14 +43,11 @@ function calculateProfit(product, settings) {
   const sellingPriceUsd = usPrice;
   const sellingPriceJpy = sellingPriceUsd * exchangeRateJpyToUsd;
 
-  // 5. Amazon手数料 (日本円) - 例: 販売価格に対してAmazon手数料率を適用
+  // 5. Amazon手数料 (日本円)
   const amazonFeeJpy = sellingPriceJpy * amazonFeeRate;
 
-  // 6. 国内送料 (米国アマゾン倉庫への送料など、今回は日本から米国への送料として国際送料に含める)
-  // あるいは、出品者から購入者への米国内送料
-  // 今回は、簡単のためdomesticShippingCostPerItem を出品者が負担する米国内配送費用として扱う
-  const domesticShippingCostUsdToBuyer = 0; // 今回は購入者負担と仮定
-  const domesticShippingCostJpy = domesticShippingCostUsdToBuyer * exchangeRateJpyToUsd;
+  // 6. 国内送料 (米国) - 今回は0と仮定
+  const domesticShippingCostJpy = 0;
 
   // 7. 総コスト (日本円)
   const totalCostJpy = procurementCostJpy + internationalShippingCostJpy + customsDutyJpy + amazonFeeJpy + domesticShippingCostJpy;
@@ -48,14 +59,14 @@ function calculateProfit(product, settings) {
   const profitRate = sellingPriceJpy > 0 ? (profitJpy / sellingPriceJpy) * 100 : 0;
 
   return {
-    profitJpy: profitJpy,
-    profitRate: profitRate,
-    procurementCostJpy: procurementCostJpy,
-    internationalShippingCostJpy: internationalShippingCostJpy,
-    customsDutyJpy: customsDutyJpy,
-    amazonFeeJpy: amazonFeeJpy,
-    sellingPriceJpy: sellingPriceJpy,
-    totalCostJpy: totalCostJpy,
+    profitJpy,
+    profitRate,
+    procurementCostJpy,
+    internationalShippingCostJpy,
+    customsDutyJpy,
+    amazonFeeJpy,
+    sellingPriceJpy,
+    totalCostJpy,
   };
 }
 
