@@ -29,6 +29,13 @@ const port = 3001;
 app.use(cors());
 app.use(express.json());
 
+// --- 認証が必要なAPIルート ---
+const apiRouter = express.Router();
+apiRouter.use(authenticate);
+
+const US_MARKETPLACE_ID = 'ATVPDKIKX0DER';
+const JP_MARKETPLACE_ID = 'A1VC38T7YXB528';
+
 // --- 認証が不要なAPIルート (Auth) ---
 const authRouter = express.Router();
 // (変更なし)
@@ -68,7 +75,8 @@ authRouter.post('/login', async (req, res) => {
     console.error('ログイン処理中にエラー:', error);
     res.status(500).json({ error: 'サーバー内部でエラーが発生しました。' });
   }
-});
+}
+);
 app.use('/api/auth', authRouter);
 
 // --- Amazon OAuth 関連API ---
@@ -153,15 +161,6 @@ apiRouter.delete('/amazon/disconnect', authenticate, async (req, res) => {
     }
 });
 
-
-// --- 認証が必要なAPIルート ---
-const apiRouter = express.Router();
-apiRouter.use(authenticate);
-
-const US_MARKETPLACE_ID = 'ATVPDKIKX0DER';
-const JP_MARKETPLACE_ID = 'A1VC38T7YXB528';
-
-// ▼▼▼ /api/search の改修 ▼▼▼
 apiRouter.get('/search', async (req, res) => {
   const { searchType, query, classificationId } = req.query;
   const userId = req.user.userId;
@@ -441,6 +440,7 @@ apiRouter.post('/bulk-listing-from-asins', async (req, res) => {
         const [usPricing, jpPricing] = await Promise.all([
             getCompetitivePricingForAsins(pricingAsins, US_MARKETPLACE_ID, userId, () => isCancelled),
             getCompetitivePricingForAsins(pricingAsins, JP_MARKETPLACE_ID, userId, () => isCancelled)
+        ]);
 
         if (isCancelled) return;
 
@@ -463,8 +463,6 @@ apiRouter.post('/bulk-listing-from-asins', async (req, res) => {
             if (excluded) {
                 detailLogs.push({ asin: product.asin, status: 'skipped', reason: `除外条件に一致 (${excluded.reason})` });
                 continue;
-            }
-            
             }
             
             // SKUを生成または既存を使用

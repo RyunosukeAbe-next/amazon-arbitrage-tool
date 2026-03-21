@@ -21,9 +21,27 @@ const SettingsTab: React.FC = () => {
   const [error, setError] = useState('');
   const [savedMessage, setSavedMessage] = useState('');
 
+  const [isAmazonLinked, setIsAmazonLinked] = useState(false);
+  const [sellingPartnerId, setSellingPartnerId] = useState<string | null>(null);
+  const [linkedAt, setLinkedAt] = useState<string | null>(null);
+
   useEffect(() => {
     fetchSettings();
+    fetchAmazonAuthStatus();
   }, []);
+
+  const fetchAmazonAuthStatus = async () => {
+    try {
+      const response = await api.get('/amazon/auth-status');
+      setIsAmazonLinked(response.data.isLinked);
+      setSellingPartnerId(response.data.sellingPartnerId || null);
+      setLinkedAt(response.data.linkedAt || null);
+    } catch (err: any) {
+      console.error('Amazon認証ステータスの取得に失敗しました。', err);
+    }
+  };
+
+
 
   const fetchSettings = async () => {
     setLoading(true);
@@ -67,6 +85,36 @@ const SettingsTab: React.FC = () => {
     }
   };
 
+  const handleLinkAmazon = async () => {
+    setLoading(true);
+    setError('');
+    setSavedMessage('');
+    try {
+      const response = await api.get('/amazon/authorize');
+      // Amazonの認証URLにリダイレクト
+      window.location.href = response.data.authorizationUrl;
+    } catch (err: any) {
+      setError(err.response?.data?.error || 'Amazon認証URLの取得に失敗しました。');
+      setLoading(false);
+    }
+  };
+
+  const handleDisconnectAmazon = async () => {
+    setLoading(true);
+    setError('');
+    setSavedMessage('');
+    try {
+      await api.delete('/amazon/disconnect');
+      setSavedMessage('Amazonアカウントの連携を解除しました。');
+      // 認証ステータスを更新
+      await fetchAmazonAuthStatus();
+    } catch (err: any) {
+      setError(err.response?.data?.error || 'Amazonアカウントの連携解除に失敗しました。');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <>
       <Typography variant="h5" component="h2" gutterBottom>設定</Typography>
@@ -91,6 +139,42 @@ const SettingsTab: React.FC = () => {
           <TextField label="除外ASIN (カンマ区切り)" name="excludedAsins" value={settings.excludedAsins.join(', ')} onChange={handleArraySettingsChange} fullWidth multiline rows={2} />
           <TextField label="除外ブランド (カンマ区切り)" name="excludedBrands" value={settings.excludedBrands.join(', ')} onChange={handleArraySettingsChange} fullWidth multiline rows={2} />
           <TextField label="除外キーワード (カンマ区切り)" name="excludedKeywords" value={settings.excludedKeywords.join(', ')} onChange={handleArraySettingsChange} fullWidth multiline rows={2} />
+          
+          <Box sx={{ mt: 3, p: 2, border: '1px solid #ccc', borderRadius: '4px' }}>
+            <Typography variant="h6" gutterBottom>Amazonアカウント連携</Typography>
+            {isAmazonLinked ? (
+              <>
+                <Alert severity="success">
+                  Amazonアカウントと連携済みです。<br />
+                  Selling Partner ID: {sellingPartnerId}<br />
+                  連携日時: {linkedAt ? new Date(linkedAt).toLocaleString() : 'N/A'}
+                </Alert>
+                <Button 
+                  variant="outlined" 
+                  color="secondary" 
+                  onClick={handleDisconnectAmazon} 
+                  disabled={loading} 
+                  sx={{ mt: 2 }}
+                >
+                  Amazonアカウント連携を解除
+                </Button>
+              </>
+            ) : (
+              <>
+                <Alert severity="warning">Amazonアカウントは連携されていません。</Alert>
+                <Button 
+                  variant="contained" 
+                  onClick={handleLinkAmazon} 
+                  disabled={loading} 
+                  sx={{ mt: 2 }}
+                >
+                  Amazonアカウントと連携する
+                </Button>
+              </>
+            )}
+            {error && <Alert severity="error" sx={{ mt: 2 }}>{error}</Alert>}
+          </Box>
+          
           <Box>
             <Button variant="contained" onClick={handleSaveSettings} disabled={loading}>設定を保存</Button>
           </Box>

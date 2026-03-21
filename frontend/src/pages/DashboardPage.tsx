@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom'; // 追加
 import {
   Container, Typography, Box, Tabs, Tab, AppBar, Toolbar, Button,
   Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Paper
@@ -55,7 +56,10 @@ function TabPanel(props: TabPanelProps) {
 
 const DashboardPage: React.FC = () => {
   const { logout } = useAuth();
-  const [currentTab, setCurrentTab] = useState(0);
+  const [searchParams] = useSearchParams(); // 追加
+  const initialTab = searchParams.get('tab') === 'settings' ? 6 : 0; // 追加
+
+  const [currentTab, setCurrentTab] = useState(initialTab); // 変更
   const [searchQueue, setSearchQueue] = useState<SearchJob[]>([]);
   const [completedSearchResults, setCompletedSearchResults] = useState<ProductResult[]>([]);
   
