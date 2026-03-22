@@ -60,16 +60,18 @@ async function saveTrackedListings(userId, listings) {
  * @param {string} marketplaceId 
  * @param {number} quantity
  */
-async function addTrackedListing(userId, sku, asin, marketplaceId, quantity) {
+async function addTrackedListing(userId, sku, asin, marketplaceId, quantity, price) {
   const listings = await loadTrackedListings(userId);
   const existingIndex = listings.findIndex(l => l.sku === sku && l.marketplaceId === marketplaceId);
   
+  const listingData = { sku, asin, marketplaceId, quantity, price };
+
   if (existingIndex > -1) {
     // 既存の場合は情報を更新
-    listings[existingIndex] = { sku, asin, marketplaceId, quantity };
+    listings[existingIndex] = listingData;
   } else {
     // 新規の場合は追加
-    listings.push({ sku, asin, marketplaceId, quantity });
+    listings.push(listingData);
   }
   
   await saveTrackedListings(userId, listings);

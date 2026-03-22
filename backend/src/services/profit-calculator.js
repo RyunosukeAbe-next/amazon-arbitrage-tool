@@ -71,20 +71,47 @@ function calculateProfit(product, settings) {
 }
 
 // 除外判定
-function isExcluded(product, settings) {
+function isExcluded(product, settings, profitResult) {
   const { asin, brand, productName } = product;
-  const { excludedAsins, excludedBrands, excludedKeywords } = settings;
+  const { excludedAsins, excludedBrands, excludedKeywords, profitabilityTiers } = settings;
 
+  // 従来の除外判定
   if (excludedAsins.includes(asin)) {
-    return true;
+    return { excluded: true, reason: `除外ASIN: ${asin}` };
   }
-  if (excludedBrands.some(b => brand.toLowerCase().includes(b.toLowerCase()))) {
-    return true;
+  const excludedBrand = excludedBrands.find(b => brand && brand.toLowerCase().includes(b.toLowerCase()));
+  if (excludedBrand) {
+    return { excluded: true, reason: `除外ブランド: ${excludedBrand}` };
   }
-  if (excludedKeywords.some(k => productName.toLowerCase().includes(k.toLowerCase()))) {
-    return true;
+  const excludedKeyword = excludedKeywords.find(k => productName && productName.toLowerCase().includes(k.toLowerCase()));
+  if (excludedKeyword) {
+    return { excluded: true, reason: `除外キーワード: ${excludedKeyword}` };
   }
-  return false;
+
+  // 新しい利益ベースの除外判定
+  if (profitResult && profitabilityTiers) {
+    const { sellingPriceJpy, profitJpy, profitRate } = profitResult;
+
+    // 該当する価格帯のルールを探す
+    const tier = profitabilityTiers.find(t => sellingPriceJpy >= t.fromPrice && sellingPriceJpy <= t.toPrice);
+
+    if (tier) {
+      // 利益率チェック
+      if (profitRate < tier.minProfitRate) {
+        return { excluded: true, reason: `利益率が基準未満 (基準: ${tier.minProfitRate}% / 結果: ${profitRate.toFixed(2)}%)` };
+      }
+      // 利益額チェック
+      if (profitJpy < tier.minProfitAmount) {
+        return { excluded: true, reason: `利益額が基準未満 (基準: ${tier.minProfitAmount}円 / 結果: ${Math.floor(profitJpy)}円)` };
+      }
+    } else {
+        // どの価格帯にも当てはまらない場合（設定漏れなど）は、安全のために除外する
+        return { excluded: true, reason: '販売価格に対応する利益設定が見つかりません。' };
+    }
+  }
+
+  // すべてのチェックをパス
+  return { excluded: false, reason: null };
 }
 
 module.exports = {

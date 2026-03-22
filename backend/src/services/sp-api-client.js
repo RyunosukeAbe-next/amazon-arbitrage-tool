@@ -168,8 +168,10 @@ async function getCompetitivePricingForAsins(asins, marketplaceId, userId, isCan
             if (Array.isArray(res)) {
                 for (const result of res) { 
                     if (result.status === 'Success' && result.Product) {
-                        const competitivePricing = result.Product.CompetitivePricing;
-                        const landedPrice = competitivePricing?.CompetitivePrices?.[0]?.Price?.LandedPrice?.Amount;
+                        const competitivePrices = competitivePricing?.CompetitivePrices || [];
+                        const newPriceObject = competitivePrices.find(p => p.condition === 'New');
+                        const landedPrice = newPriceObject?.Price?.LandedPrice?.Amount;
+
                         const offerListings = competitivePricing?.NumberOfOfferListings || [];
                         const newOffer = offerListings.find(offer => offer.condition === 'New');
                         const sellerCount = newOffer ? newOffer.Count : 0;
@@ -327,25 +329,102 @@ async function getCatalogItemsByAsins(asins, marketplaceId, userId, isCancelled 
         return [];
     }
     console.log(`SP-API Catalog: Getting item details for ${asins.length} ASINs...`);
-    const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-    const allProducts = [];
+    
+    const spApiClient = await getSpApiClient(marketplaceId, userId);
+    
+    try {
+        const res = await spApiClient.callAPI({
+            method: 'GET',
+            api_path: '/catalog/2022-04-01/items',
+            query: {
+                marketplaceIds: marketplaceId,
+                identifiers: asins.join(','),
+                identifierType: 'ASIN',
+                includedData: 'summaries',
+                pageSize: 20, // Max 20
+            },
+        });
 
-    for (const asin of asins) {
+        if (res.items && res.items.length > 0) {
+            return res.items.map(item => ({
+                asin: item.asin,
+                productName: item.summaries?.[0]?.itemName || 'N/A',
+                brand: item.summaries?.[0]?.brand || 'N/A',
+            }));
+        }
+        return [];
+    } catch (error) {
+        console.error(`SP-API Catalog (getCatalogItemsByAsins) の呼び出し中にエラーが発生しました:`, error);
+        return [];
+    }
+}
+
+async function getProductAttributesForAsins(asins, marketplaceId, userId, isCancelled = () => false) {
+    if (!asins || asins.length === 0) {
+        return {};
+    }
+    console.log(`SP-API Attributes: Getting attributes for ${asins.length} ASINs in ${marketplaceId}`);
+    
+    const spApiClient = await getSpApiClient(marketplaceId, userId);
+    const allAttributes = {};
+
+    const chunkSize = 20; 
+    for (let i = 0; i < asins.length; i += chunkSize) {
         if (isCancelled()) {
-            console.log(`SP-API Catalog: Process cancelled by client.`);
+            console.log(`SP-API Attributes: Process cancelled by client.`);
             break;
         }
-        await sleep(1100); // レートリミット対策
-        const attributes = await getCatalogItemAttributes(asin, marketplaceId, userId);
-        if (attributes) {
-            allProducts.push({
-                asin: asin,
-                productName: attributes.productName || 'N/A',
-                brand: attributes.brand || 'N/A',
+        const chunk = asins.slice(i, i + chunkSize);
+        
+        try {
+            const res = await spApiClient.callAPI({
+                method: 'GET',
+                api_path: '/catalog/2022-04-01/items',
+                query: {
+                    marketplaceIds: marketplaceId,
+                    identifiers: chunk.join(','),
+                    identifierType: 'ASIN',
+                    includedData: 'attributes,dimensions,relationships',
+                },
             });
+
+            if (res.items && res.items.length > 0) {
+                for (const item of res.items) {
+                    const attributes = item.attributes || {};
+                    const dimensions = item.dimensions?.[0]?.item || {};
+                    const relationships = item.relationships || [];
+
+                    let weight = null;
+                    if (attributes.item_package_weight) {
+                        const weightData = attributes.item_package_weight[0];
+                        if (weightData && weightData.value > 0) {
+                            weight = `${weightData.value} ${weightData.unit}`;
+                        }
+                    }
+
+                    let volume = null;
+                    if (dimensions.length?.value && dimensions.width?.value && dimensions.height?.value) {
+                        volume = (dimensions.length.value * dimensions.width.value * dimensions.height.value).toFixed(2) + ` ${dimensions.length.unit}^3`;
+                    }
+                    
+                    const category = attributes.product_type_name?.[0] || 'N/A';
+                    const hasVariations = relationships.some(rel => rel.type === 'VARIATION');
+
+                    allAttributes[item.asin] = {
+                        weight,
+                        volume,
+                        category,
+                        hasVariations,
+                    };
+                }
+            }
+        } catch (error) {
+            console.error(`SP-API Attributes (${marketplaceId}) のチャンク処理中にエラーが発生しました:`, error);
         }
     }
-    return allProducts;
+    
+    console.log(`SP-API Attributes: Found attributes for ${Object.keys(allAttributes).length} ASINs in ${marketplaceId}.`);
+    return allAttributes;
 }
 
 
@@ -354,6 +433,7 @@ module.exports = {
     getCompetitivePricingForAsins,
     getCatalogItemAttributes,
     getCatalogItemsByAsins,
+    getProductAttributesForAsins,
     putListingsItem,
     deleteListingsItem,
 };

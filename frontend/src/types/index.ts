@@ -32,4 +32,12 @@ export interface AppSettings {
   excludedAsins: string[];
   excludedBrands: string[];
   excludedKeywords: string[];
+  profitabilityTiers: ProfitabilityTier[];
+}
+
+export interface ProfitabilityTier {
+  fromPrice: number;
+  toPrice: number;
+  minProfitRate: number;
+  minProfitAmount: number;
 }

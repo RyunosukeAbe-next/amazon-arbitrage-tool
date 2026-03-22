@@ -11,7 +11,15 @@ const DEFAULT_SETTINGS = {
   inventoryThreshold: 1,
   excludedAsins: [],
   excludedBrands: [],
-  excludedKeywords: []
+  excludedKeywords: [],
+  profitabilityTiers: [
+    { fromPrice: 0, toPrice: 1000, minProfitRate: 25, minProfitAmount: 200 },
+    { fromPrice: 1001, toPrice: 2000, minProfitRate: 20, minProfitAmount: 400 },
+    { fromPrice: 2001, toPrice: 3000, minProfitRate: 18, minProfitAmount: 500 },
+    { fromPrice: 3001, toPrice: 5000, minProfitRate: 15, minProfitAmount: 700 },
+    { fromPrice: 5001, toPrice: 10000, minProfitRate: 12, minProfitAmount: 1000 },
+    { fromPrice: 10001, toPrice: 999999, minProfitRate: 10, minProfitAmount: 1500 }
+  ]
 };
 
 /**

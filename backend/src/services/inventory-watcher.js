@@ -2,11 +2,10 @@ const cron = require('node-cron');
 const { loadTrackedListings, removeTrackedListing } = require('./listing-manager');
 const { getCompetitivePricingForAsins, deleteListingsItem } = require('./sp-api-client');
 const { loadSettings } = require('./settings-manager');
-const { getAllUsers } = require('./user-manager'); // ユーザーマネージャーをインポート
+const { getAllUsers } = require('./user-manager');
+const { calculateProfit, isExcluded } = require('./profit-calculator');
 
-// 例: 毎時0分に実行
 const cronSchedule = '0 * * * *'; 
-
 let isRunning = false;
 
 async function checkAllUsersInventory() {
@@ -25,7 +24,6 @@ async function checkAllUsersInventory() {
         return;
     }
 
-    // 全ユーザーをループして処理
     for (const user of allUsers) {
       console.log(`--- ユーザー[${user.username} (${user.id})] の在庫チェックを開始 ---`);
       await checkInventoryForUser(user.id);
@@ -59,20 +57,43 @@ async function checkInventoryForUser(userId) {
     
     const asinsToCheck = usListings.map(l => l.asin);
 
-    // TODO: このAPI呼び出しはユーザーごとの認証情報(SP-APIトークン)を使うように将来的に改修が必要
-    const jpPricing = await getCompetitivePricingForAsins(asinsToCheck, 'A1VC38T7YXB528');
+    const [usPricing, jpPricing] = await Promise.all([
+        getCompetitivePricingForAsins(asinsToCheck, 'ATVPDKIKX0DER', userId),
+        getCompetitivePricingForAsins(asinsToCheck, 'A1VC38T7YXB528', userId)
+    ]);
 
     for (const listing of usListings) {
-      const priceInfo = jpPricing[listing.asin];
-      const sellerCount = priceInfo ? priceInfo.sellerCount : 0;
+      const jpPriceInfo = jpPricing[listing.asin];
+      const sellerCount = jpPriceInfo ? jpPriceInfo.sellerCount : 0;
 
       console.log(`[ユーザーID: ${userId}][在庫チェック] SKU: ${listing.sku}, 日本での出品者数: ${sellerCount}`);
 
       if (sellerCount <= inventoryThreshold) {
         console.log(`[ユーザーID: ${userId}][出品取下] SKU: ${listing.sku} の日本での出品者数(${sellerCount})が閾値(${inventoryThreshold})以下です。出品を削除します。`);
         try {
-          // TODO: このAPI呼び出しもユーザーごとの認証情報を使うように将来的に改修が必要
-          await deleteListingsItem(listing.sku, listing.marketplaceId);
+          await deleteListingsItem(listing.sku, listing.marketplaceId, userId);
+          await removeTrackedListing(userId, listing.sku, listing.marketplaceId);
+          console.log(`[ユーザーID: ${userId}][出品取下成功] SKU: ${listing.sku} を削除しました。`);
+        } catch (error) {
+          console.error(`[ユーザーID: ${userId}][出品取下失敗] SKU: ${listing.sku} の削除に失敗しました:`, error);
+        }
+        continue; 
+      }
+
+      const usPriceInfo = usPricing[listing.asin];
+      if (!usPriceInfo || !usPriceInfo.price || !jpPriceInfo || !jpPriceInfo.price) {
+          console.log(`[ユーザーID: ${userId}][利益チェック] SKU: ${listing.sku} の価格情報が不足しているためスキップします。`);
+          continue;
+      }
+      
+      const tempProduct = { asin: listing.asin, usPrice: usPriceInfo.price, jpPrice: jpPriceInfo.price };
+      const profitResult = calculateProfit(tempProduct, settings);
+      const exclusionInfo = isExcluded(tempProduct, settings, profitResult);
+
+      if (exclusionInfo.excluded) {
+        console.log(`[ユーザーID: ${userId}][出品取下] SKU: ${listing.sku} が利益基準を満たさなくなりました。理由: ${exclusionInfo.reason}。出品を削除します。`);
+        try {
+          await deleteListingsItem(listing.sku, listing.marketplaceId, userId);
           await removeTrackedListing(userId, listing.sku, listing.marketplaceId);
           console.log(`[ユーザーID: ${userId}][出品取下成功] SKU: ${listing.sku} を削除しました。`);
         } catch (error) {
@@ -87,7 +108,7 @@ async function checkInventoryForUser(userId) {
 
 function startInventoryWatcher() {
   console.log(`在庫監視タスクをスケジュールしました。実行スケジュール: ${cronSchedule}`);
-  cron.schedule(cronSchedule, checkAllUsersInventory); // 呼び出す関数を変更
+  cron.schedule(cronSchedule, checkAllUsersInventory);
 }
 
 module.exports = {

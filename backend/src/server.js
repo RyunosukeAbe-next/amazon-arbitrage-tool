@@ -8,7 +8,7 @@ const cors = require('cors');
 const jwt = require('jsonwebtoken');
 
 // サービスとミドルウェアの読み込み
-const { searchProductsByKeywords, getCompetitivePricingForAsins, getCatalogItemsByAsins, putListingsItem, deleteListingsItem } = require('./services/sp-api-client');
+const { searchProductsByKeywords, getCompetitivePricingForAsins, getCatalogItemsByAsins, putListingsItem, deleteListingsItem, getProductAttributesForAsins } = require('./services/sp-api-client');
 const { json2csv } = require('json-2-csv');
 const { loadSettings, saveSettings } = require('./services/settings-manager');
 const { calculateProfit, isExcluded } = require('./services/profit-calculator');
@@ -215,9 +215,10 @@ apiRouter.get('/search', async (req, res) => {
     // ステップ2: 商品情報と価格情報を取得し、利益計算
     let finalResults = [];
     if (spApiProducts.length > 0) {
-      const [usPricing, jpPricing] = await Promise.all([
+      const [usPricing, jpPricing, attributes] = await Promise.all([
         getCompetitivePricingForAsins(asins, US_MARKETPLACE_ID, userId, () => isCancelled),
-        getCompetitivePricingForAsins(asins, JP_MARKETPLACE_ID, userId, () => isCancelled)
+        getCompetitivePricingForAsins(asins, JP_MARKETPLACE_ID, userId, () => isCancelled),
+        getProductAttributesForAsins(asins, US_MARKETPLACE_ID, userId, () => isCancelled)
       ]);
 
       if (isCancelled) return;
@@ -225,10 +226,18 @@ apiRouter.get('/search', async (req, res) => {
       finalResults = spApiProducts.map(product => {
         const usPriceInfo = usPricing[product.asin] || { price: 0, sellerCount: 0 };
         const jpPriceInfo = jpPricing[product.asin] || { price: 0 };
-        const combinedProduct = { ...product, usPrice: usPriceInfo.price, jpPrice: jpPriceInfo.price, usSellerCount: usPriceInfo.sellerCount };
+        const productAttributes = attributes[product.asin] || {};
+
+        const combinedProduct = { 
+          ...product, 
+          usPrice: usPriceInfo.price, 
+          jpPrice: jpPriceInfo.price, 
+          usSellerCount: usPriceInfo.sellerCount,
+          ...productAttributes 
+        };
         const profitResult = calculateProfit(combinedProduct, settings);
-        const excluded = isExcluded(combinedProduct, settings);
-        return { ...combinedProduct, ...profitResult, isExcluded: excluded };
+        const exclusionInfo = isExcluded(combinedProduct, settings, profitResult);
+        return { ...combinedProduct, ...profitResult, isExcluded: exclusionInfo.excluded, exclusionReason: exclusionInfo.reason };
       });
     }
 
@@ -285,6 +294,10 @@ apiRouter.post('/download-csv', async (req, res) => {
             { field: 'asin', title: 'ASIN' },
             { field: 'productName', title: '商品名' },
             { field: 'brand', title: 'ブランド' },
+            { field: 'category', title: 'カテゴリ' },
+            { field: 'weight', title: '重量' },
+            { field: 'volume', title: '体積' },
+            { field: 'hasVariations', title: 'バリエーション有無' },
             { field: 'usPrice', title: '米国価格 (USD)' },
             { field: 'jpPrice', title: '日本価格 (JPY)' },
             { field: 'usSellerCount', title: '米国出品者数' },
@@ -296,7 +309,8 @@ apiRouter.post('/download-csv', async (req, res) => {
             { field: 'internationalShippingCostJpy', title: '国際送料 (JPY)' },
             { field: 'customsDutyJpy', title: '関税 (JPY)' },
             { field: 'amazonFeeJpy', title: 'Amazon手数料 (JPY)' },
-            { field: 'isExcluded', title: '除外対象' }
+            { field: 'isExcluded', title: '除外対象' },
+            { field: 'exclusionReason', title: '除外理由' }
         ];
 
         const csv = await json2csv(products, { keys: csvKeys });
@@ -333,7 +347,7 @@ apiRouter.post('/listing', async (req, res) => {
         }
 
         const result = await putListingsItem(asin, skuToUse, price, quantity, marketplaceId, userId);
-        await listingManager.addTrackedListing(userId, skuToUse, asin, marketplaceId, quantity); // SKUを渡すように変更
+        await listingManager.addTrackedListing(userId, skuToUse, asin, marketplaceId, quantity, price); // SKUを渡すように変更
         res.json(result);
     } catch (error) {
         console.error(`[User ${userId}] 出品処理中にエラーが発生しました:`, error);
@@ -386,7 +400,7 @@ apiRouter.post('/bulk-listing', async (req, res) => {
             const quantity = defaultQuantity;
             try {
                 await putListingsItem(asin, skuToUse, price, quantity, marketplaceId, userId);
-                await listingManager.addTrackedListing(userId, skuToUse, asin, marketplaceId, quantity);
+                await listingManager.addTrackedListing(userId, skuToUse, asin, marketplaceId, quantity, price);
                 return `ASIN: ${asin} - SKU: ${skuToUse}, 価格: $${price} で出品に成功しました。`;
             } catch (e) {
                 return `ASIN: ${asin} - 出品処理中にエラーが発生しました: ${e.message}`;
@@ -458,10 +472,10 @@ apiRouter.post('/bulk-listing-from-asins', async (req, res) => {
 
             const combinedProduct = { ...product, usPrice: usPriceInfo.price, jpPrice: jpPriceInfo.price, usSellerCount: usPriceInfo.sellerCount };
             const profitResult = calculateProfit(combinedProduct, settings);
-            const excluded = isExcluded(combinedProduct, settings, profitResult);
+            const exclusionInfo = isExcluded(combinedProduct, settings, profitResult);
 
-            if (excluded) {
-                detailLogs.push({ asin: product.asin, status: 'skipped', reason: `除外条件に一致 (${excluded.reason})` });
+            if (exclusionInfo.excluded) {
+                detailLogs.push({ asin: product.asin, status: 'skipped', reason: `除外条件に一致 (${exclusionInfo.reason})` });
                 continue;
             }
             
@@ -483,7 +497,7 @@ apiRouter.post('/bulk-listing-from-asins', async (req, res) => {
             
             try {
                 await putListingsItem(product.asin, skuToUse, usPriceInfo.price, quantity, marketplaceId, userId);
-                await listingManager.addTrackedListing(userId, skuToUse, product.asin, marketplaceId, quantity);
+                await listingManager.addTrackedListing(userId, skuToUse, product.asin, marketplaceId, quantity, usPriceInfo.price);
                 listedCount++;
                 detailLogs.push({ asin: product.asin, sku: skuToUse, status: 'success' });
             } catch(e) {
@@ -581,7 +595,6 @@ apiRouter.delete('/research-logs/:logId', async (req, res) => {
 
 
 app.use('/api', apiRouter);
-
 app.listen(port, () => {
   console.log(`Server is running on http://localhost:${port}`);
   startInventoryWatcher();

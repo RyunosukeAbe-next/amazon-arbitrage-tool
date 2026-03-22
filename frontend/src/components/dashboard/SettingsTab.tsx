@@ -3,7 +3,8 @@ import {
   Typography, TextField, Button, Box, Alert, CircularProgress 
 } from '@mui/material';
 import api from '../../services/api';
-import { AppSettings } from '../../types';
+import { AppSettings, ProfitabilityTier } from '../../types';
+import ProfitabilityTiersTable from './ProfitabilityTiersTable';
 
 const SettingsTab: React.FC = () => {
   const [settings, setSettings] = useState<AppSettings>({
@@ -15,7 +16,8 @@ const SettingsTab: React.FC = () => {
     inventoryThreshold: 1,
     excludedAsins: [],
     excludedBrands: [],
-    excludedKeywords: []
+    excludedKeywords: [],
+    profitabilityTiers: []
   });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -41,13 +43,16 @@ const SettingsTab: React.FC = () => {
     }
   };
 
-
-
   const fetchSettings = async () => {
     setLoading(true);
     try {
       const response = await api.get('/settings');
-      setSettings(response.data);
+      // profitabilityTiersがない場合に備えてデフォルト値を設定
+      const fetchedSettings = response.data;
+      if (!fetchedSettings.profitabilityTiers) {
+        fetchedSettings.profitabilityTiers = [];
+      }
+      setSettings(fetchedSettings);
     } catch (err: any) {
       setError(err.response?.data?.error || '設定の読み込みに失敗しました。');
     } finally {
@@ -70,6 +75,10 @@ const SettingsTab: React.FC = () => {
       [name]: value.split(',').map(item => item.trim()).filter(item => item !== '')
     }));
   };
+  
+  const handleTiersChange = (tiers: ProfitabilityTier[]) => {
+    setSettings(prev => ({ ...prev, profitabilityTiers: tiers }));
+  };
 
   const handleSaveSettings = async () => {
     setLoading(true);
@@ -91,7 +100,6 @@ const SettingsTab: React.FC = () => {
     setSavedMessage('');
     try {
       const response = await api.get('/amazon/authorize');
-      // Amazonの認証URLにリダイレクト
       window.location.href = response.data.authorizationUrl;
     } catch (err: any) {
       setError(err.response?.data?.error || 'Amazon認証URLの取得に失敗しました。');
@@ -106,7 +114,6 @@ const SettingsTab: React.FC = () => {
     try {
       await api.delete('/amazon/disconnect');
       setSavedMessage('Amazonアカウントの連携を解除しました。');
-      // 認証ステータスを更新
       await fetchAmazonAuthStatus();
     } catch (err: any) {
       setError(err.response?.data?.error || 'Amazonアカウントの連携解除に失敗しました。');
@@ -139,7 +146,9 @@ const SettingsTab: React.FC = () => {
           <TextField label="除外ASIN (カンマ区切り)" name="excludedAsins" value={settings.excludedAsins.join(', ')} onChange={handleArraySettingsChange} fullWidth multiline rows={2} />
           <TextField label="除外ブランド (カンマ区切り)" name="excludedBrands" value={settings.excludedBrands.join(', ')} onChange={handleArraySettingsChange} fullWidth multiline rows={2} />
           <TextField label="除外キーワード (カンマ区切り)" name="excludedKeywords" value={settings.excludedKeywords.join(', ')} onChange={handleArraySettingsChange} fullWidth multiline rows={2} />
-          
+
+          <ProfitabilityTiersTable tiers={settings.profitabilityTiers || []} onTiersChange={handleTiersChange} />
+
           <Box sx={{ mt: 3, p: 2, border: '1px solid #ccc', borderRadius: '4px' }}>
             <Typography variant="h6" gutterBottom>Amazonアカウント連携</Typography>
             {isAmazonLinked ? (

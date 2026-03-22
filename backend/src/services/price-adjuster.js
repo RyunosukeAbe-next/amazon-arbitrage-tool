@@ -1,126 +1,122 @@
 const cron = require('node-cron');
-const { loadTrackedListings } = require('./listing-manager');
-const { getCompetitivePricingForAsins, putListingsItem, getCatalogItemAttributes } = require('./sp-api-client');
-const { calculateProfit } = require('./profit-calculator');
-const { loadSettings } = require('./settings-manager');
-const { getAllUsers } = require('./user-manager'); // ユーザーマネージャーをインポート
+const listingManager = require('./listing-manager');
+const spApiClient = require('./sp-api-client');
+const settingsManager = require('./settings-manager');
+const userManager = require('./user-manager');
+const { calculateProfit, isExcluded } = require('./profit-calculator');
 
-// 実行スケジュール（例: 毎時15分に実行）
-const cronSchedule = '15 * * * *'; 
+const US_MARKETPLACE_ID = 'ATVPDKIKX0DER';
+const JP_MARKETPLACE_ID = 'A1VC38T7YXB528';
 
+// At every 15th minute.
+const CRON_SCHEDULE = '*/15 * * * *';
 let isRunning = false;
 
 async function adjustAllUsersPrices() {
   if (isRunning) {
-    console.log('全ユーザーの価格調整は既に実行中です。');
+    console.log('[PriceAdjuster] Task is already running. Skipping this cycle.');
     return;
   }
-  
-  console.log('全ユーザーの価格調整を開始します...');
+
+  console.log('[PriceAdjuster] Starting price adjustment task for all users...');
   isRunning = true;
 
   try {
-    const allUsers = await getAllUsers();
+    const allUsers = await userManager.getAllUsers();
     if (allUsers.length === 0) {
-        console.log('処理対象のユーザーがいません。');
-        return;
+      console.log('[PriceAdjuster] No users found. Task finished.');
+      return;
     }
 
-    // 全ユーザーをループして処理
     for (const user of allUsers) {
-        console.log(`--- ユーザー[${user.username} (${user.id})] の価格調整を開始 ---`);
-        await adjustPricesForUser(user.id);
-        console.log(`--- ユーザー[${user.username} (${user.id})] の価格調整を終了 ---`);
+      console.log(`[PriceAdjuster] Processing user: ${user.username} (ID: ${user.id})`);
+      await adjustPricesForUser(user.id);
     }
-
   } catch (error) {
-    console.error('全ユーザーの価格調整中にエラーが発生しました:', error);
+    console.error('[PriceAdjuster] An unexpected error occurred during the main task:', error);
   } finally {
     isRunning = false;
-    console.log('全ユーザーの価格調整を終了します。');
+    console.log('[PriceAdjuster] Price adjustment task finished.');
   }
 }
 
 async function adjustPricesForUser(userId) {
   try {
-    const trackedListings = await loadTrackedListings(userId);
-    if (trackedListings.length === 0) {
-      console.log(`[ユーザーID: ${userId}] 価格調整対象の商品はありません。`);
+    const settings = await settingsManager.loadSettings(userId);
+    // TODO: Add a setting for enabling/disabling this feature. For now, it's always on.
+    // if (!settings.autoPricingEnabled) {
+    //   console.log(`[PriceAdjuster] Auto-pricing is disabled for user ${userId}.`);
+    //   return;
+    // }
+
+    const trackedListings = await listingManager.loadTrackedListings(userId);
+    const usListings = trackedListings.filter(l => l.marketplaceId === US_MARKETPLACE_ID);
+
+    if (usListings.length === 0) {
+      console.log(`[PriceAdjuster] User ${userId} has no tracked US listings.`);
       return;
     }
-    
-    const settings = await loadSettings(userId);
-    const usListings = trackedListings.filter(l => l.marketplaceId === 'ATVPDKIKX0DER');
-    const asinsToAdjust = usListings.map(l => l.asin);
 
-    if (asinsToAdjust.length === 0) {
-        return;
-    }
+    const asins = usListings.map(l => l.asin);
+    console.log(`[PriceAdjuster] User ${userId}: Checking prices for ${asins.length} ASINs.`);
 
-    console.log(`[ユーザーID: ${userId}][価格調整] ${asinsToAdjust.length}件の商品の価格情報を取得します...`);
-    // TODO: このAPI呼び出しはユーザーごとの認証情報(SP-APIトークン)を使うように将来的に改修が必要
-    const [usPricing, jpPricing] = await Promise.all([
-        getCompetitivePricingForAsins(asinsToAdjust, 'ATVPDKIKX0DER'),
-        getCompetitivePricingForAsins(asinsToAdjust, 'A1VC38T7YXB528')
+    // Get both US and JP prices
+    const [usCompetitivePrices, jpCompetitivePrices] = await Promise.all([
+        spApiClient.getCompetitivePricingForAsins(asins, US_MARKETPLACE_ID, userId),
+        spApiClient.getCompetitivePricingForAsins(asins, JP_MARKETPLACE_ID, userId)
     ]);
 
     for (const listing of usListings) {
-      const jpPriceInfo = jpPricing[listing.asin];
-      const usPriceInfo = usPricing[listing.asin];
+      const usPriceInfo = usCompetitivePrices[listing.asin];
+      const jpPriceInfo = jpCompetitivePrices[listing.asin];
+      const newPrice = usPriceInfo ? usPriceInfo.price : null;
 
-      if (!jpPriceInfo || !jpPriceInfo.price || !usPriceInfo || !usPriceInfo.price) {
-        console.log(`[ユーザーID: ${userId}][価格調整スキップ] SKU: ${listing.sku} の価格情報が不足しています。`);
-        continue;
-      }
-      
-      const {
-        internationalShippingRatePerKg, customsDutyRate, amazonFeeRate,
-        targetProfitRate, exchangeRateJpyToUsd,
-      } = settings;
-      
-      // TODO: このAPI呼び出しもユーザーごとの認証情報を使うように将来的に改修が必要
-      const attributes = await getCatalogItemAttributes(listing.asin, 'ATVPDKIKX0DER');
-      let itemWeightKg = 0.5;
-      if (attributes && attributes.weight) {
-          const { value, unit } = attributes.weight;
-          if (unit.toLowerCase() === 'pounds') itemWeightKg = value * 0.453592;
-          else if (unit.toLowerCase() === 'kilograms') itemWeightKg = value;
+      if (!newPrice || !jpPriceInfo || !jpPriceInfo.price) {
+          console.log(`[PriceAdjuster] User ${userId}: Skipping SKU ${listing.sku} due to missing pricing info.`);
+          continue;
       }
 
-      const procurementCostJpy = jpPriceInfo.price;
-      const internationalShippingCostJpy = internationalShippingRatePerKg * itemWeightKg;
-      const dutiableValueJpy = procurementCostJpy + internationalShippingCostJpy;
-      const customsDutyJpy = dutiableValueJpy * customsDutyRate;
-      
-      const totalFixedCostJpy = procurementCostJpy + internationalShippingCostJpy + customsDutyJpy;
-      const targetSellingPriceJpy = totalFixedCostJpy / (1 - amazonFeeRate - (targetProfitRate / 100));
-      const newSellingPriceUsd = parseFloat((targetSellingPriceJpy / exchangeRateJpyToUsd).toFixed(2));
+      // Check for profitability before adjusting price
+      const tempProduct = { asin: listing.asin, usPrice: newPrice, jpPrice: jpPriceInfo.price };
+      const profitResult = calculateProfit(tempProduct, settings);
+      const exclusionInfo = isExcluded(tempProduct, settings, profitResult);
 
-      const currentSellingPriceUsd = usPriceInfo.price;
-      const priceDifference = Math.abs(newSellingPriceUsd - currentSellingPriceUsd);
-      const priceDifferencePercentage = (currentSellingPriceUsd > 0) ? (priceDifference / currentSellingPriceUsd) * 100 : 100;
-
-      console.log(`[ユーザーID: ${userId}][価格評価] SKU: ${listing.sku} | 現在: $${currentSellingPriceUsd} | 新: $${newSellingPriceUsd}`);
-
-      if (newSellingPriceUsd > 0 && isFinite(newSellingPriceUsd) && priceDifferencePercentage > 1) {
-        console.log(`[ユーザーID: ${userId}][価格更新実行] SKU: ${listing.sku} を $${newSellingPriceUsd} に更新します。`);
+      if (exclusionInfo.excluded) {
+        console.log(`[PriceAdjuster] User ${userId}: SKU ${listing.sku} has become unprofitable. Delisting. Reason: ${exclusionInfo.reason}`);
         try {
-          // TODO: このAPI呼び出しもユーザーごとの認証情報を使うように将来的に改修が必要
-          await putListingsItem(listing.sku, listing.asin, newSellingPriceUsd, listing.quantity, listing.marketplaceId);
-          console.log(`[ユーザーID: ${userId}][価格更新成功] SKU: ${listing.sku}`);
+          await spApiClient.deleteListingsItem(listing.sku, listing.marketplaceId, userId);
+          await listingManager.removeTrackedListing(userId, listing.sku, listing.marketplaceId);
+          console.log(`[PriceAdjuster] User ${userId}: Successfully delisted SKU ${listing.sku}.`);
         } catch (error) {
-          console.error(`[ユーザーID: ${userId}][価格更新失敗] SKU: ${listing.sku}:`, error);
+          console.error(`[PriceAdjuster] User ${userId}: Failed to delist SKU ${listing.sku}. Error:`, error.message);
+        }
+        continue; // Move to the next listing
+      }
+
+      // If not excluded, proceed with price adjustment logic
+      if (newPrice > 0 && newPrice !== listing.price) {
+        console.log(`[PriceAdjuster] User ${userId}: Price for SKU ${listing.sku} needs update. Old: ${listing.price}, New: ${newPrice}`);
+        try {
+          // Update the listing on Amazon
+          await spApiClient.putListingsItem(listing.asin, listing.sku, newPrice, listing.quantity, listing.marketplaceId, userId);
+          
+          // Update the price in our local tracking file
+          await listingManager.addTrackedListing(userId, listing.sku, listing.asin, listing.marketplaceId, listing.quantity, newPrice);
+          
+          console.log(`[PriceAdjuster] User ${userId}: Successfully updated price for SKU ${listing.sku} to ${newPrice}.`);
+        } catch (error) {
+          console.error(`[PriceAdjuster] User ${userId}: Failed to update price for SKU ${listing.sku}. Error:`, error.message);
         }
       }
     }
   } catch (error) {
-    console.error(`ユーザー(${userId})の価格調整中にエラーが発生しました:`, error);
+    console.error(`[PriceAdjuster] Failed to adjust prices for user ${userId}. Error:`, error);
   }
 }
 
 function startPriceAdjuster() {
-  console.log(`価格調整タスクをスケジュールしました。実行スケジュール: ${cronSchedule}`);
-  cron.schedule(cronSchedule, adjustAllUsersPrices); // 呼び出す関数を変更
+  console.log(`[PriceAdjuster] Scheduling price adjustment task with schedule: ${CRON_SCHEDULE}`);
+  cron.schedule(CRON_SCHEDULE, adjustAllUsersPrices);
 }
 
 module.exports = {
