@@ -2,7 +2,7 @@
 // 仮定: 設定データは { internationalShippingRatePerKg, domesticShippingCostPerItem, customsDutyRate, amazonFeeRate, exchangeRateJpyToUsd } を含む
 
 function calculateProfit(product, settings) {
-  const { usPrice, jpPrice, category, weight } = product;
+  const { usPrice, jpPrice, weight } = product;
 
   if (!jpPrice || jpPrice <= 0) {
     return { /* ... (same zero-value return) ... */ };
@@ -11,19 +11,16 @@ function calculateProfit(product, settings) {
   const {
     domesticShippingCostPerItem,
     customsDutyRate,
+    amazonFeeRate, // Reverted to simple rate
     exchangeRateJpyToUsd,
-    amazonFeeTiers,
     shippingCostTiers,
   } = settings;
 
-  // 1. Amazon手数料の計算
-  const defaultFeeTier = amazonFeeTiers.find(t => t.category === 'DEFAULT') || { rate: 0.15 };
-  const categoryTier = amazonFeeTiers.find(t => t.category && category && t.category.toLowerCase() === category.toLowerCase());
-  const amazonFeeRate = categoryTier ? categoryTier.rate : defaultFeeTier.rate;
+  // 1. Amazon手数料の計算 (シンプルなレートに戻す)
   const sellingPriceJpy = usPrice * exchangeRateJpyToUsd;
   const amazonFeeJpy = sellingPriceJpy * amazonFeeRate;
 
-  // 2. 国際送料の計算
+  // 2. 国際送料の計算 (Tiered logic is kept)
   const parseWeight = (weightString) => {
     if (!weightString || typeof weightString !== 'string') return 0;
     const parts = weightString.toLowerCase().split(' ');
@@ -40,7 +37,7 @@ function calculateProfit(product, settings) {
     const shippingTier = shippingCostTiers.find(t => itemWeightGrams >= t.fromWeight && itemWeightGrams <= t.toWeight);
     if (shippingTier) {
       internationalShippingCostJpy = shippingTier.cost;
-    } else {
+    } else if (itemWeightGrams > 0) {
       // If weight is above all tiers, use the highest tier's cost as a fallback
       internationalShippingCostJpy = shippingCostTiers[shippingCostTiers.length - 1].cost;
     }

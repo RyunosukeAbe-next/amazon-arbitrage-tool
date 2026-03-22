@@ -1,22 +1,21 @@
 import React, { useState, useEffect } from 'react';
 import { Typography, TextField, Button, Box, Alert, CircularProgress } from '@mui/material';
 import api from '../../services/api';
-import { AppSettings, ProfitabilityTier, AmazonFeeTier, ShippingCostTier } from '../../types';
+import { AppSettings, ProfitabilityTier, ShippingCostTier } from '../../types';
 import ProfitabilityTiersTable from './ProfitabilityTiersTable';
-import AmazonFeeTiersTable from './AmazonFeeTiersTable';
 import ShippingCostTiersTable from './ShippingCostTiersTable';
 
 const SettingsTab: React.FC = () => {
-  const [settings, setSettings] = useState<AppSettings>({
+  const [settings, setSettings] = useState<Partial<AppSettings>>({
     domesticShippingCostPerItem: 0,
     customsDutyRate: 0,
+    amazonFeeRate: 0.15,
     exchangeRateJpyToUsd: 0,
     inventoryThreshold: 1,
     excludedAsins: [],
     excludedBrands: [],
     excludedKeywords: [],
     profitabilityTiers: [],
-    amazonFeeTiers: [],
     shippingCostTiers: []
   });
   const [loading, setLoading] = useState(true);
@@ -49,7 +48,6 @@ const SettingsTab: React.FC = () => {
       const response = await api.get('/settings');
       const fetchedSettings = response.data;
       if (!fetchedSettings.profitabilityTiers) fetchedSettings.profitabilityTiers = [];
-      if (!fetchedSettings.amazonFeeTiers) fetchedSettings.amazonFeeTiers = [];
       if (!fetchedSettings.shippingCostTiers) fetchedSettings.shippingCostTiers = [];
       setSettings(fetchedSettings);
     } catch (err: any) {
@@ -77,10 +75,6 @@ const SettingsTab: React.FC = () => {
 
   const handleProfitabilityTiersChange = (tiers: ProfitabilityTier[]) => {
     setSettings(prev => ({ ...prev, profitabilityTiers: tiers }));
-  };
-
-  const handleFeeTiersChange = (tiers: AmazonFeeTier[]) => {
-    setSettings(prev => ({ ...prev, amazonFeeTiers: tiers }));
   };
 
   const handleShippingTiersChange = (tiers: ShippingCostTier[]) => {
@@ -148,12 +142,15 @@ const SettingsTab: React.FC = () => {
             <TextField label="在庫取下閾値 (出品者数)" name="inventoryThreshold" type="number" value={settings.inventoryThreshold} onChange={handleSettingsChange} fullWidth />
           </Box>
           
+          <Box sx={{ p: 2, border: '1px solid #ccc', borderRadius: '4px' }}>
+             <TextField label="Amazon手数料率 (例: 0.15)" name="amazonFeeRate" type="number" value={settings.amazonFeeRate} onChange={handleSettingsChange} fullWidth />
+          </Box>
+
           <ShippingCostTiersTable tiers={settings.shippingCostTiers || []} onTiersChange={handleShippingTiersChange} />
-          <AmazonFeeTiersTable tiers={settings.amazonFeeTiers || []} onTiersChange={handleFeeTiersChange} />
           
-          <TextField label="除外ASIN (カンマ区切り)" name="excludedAsins" value={settings.excludedAsins.join(', ')} onChange={handleArraySettingsChange} fullWidth multiline rows={2} />
-          <TextField label="除外ブランド (カンマ区切り)" name="excludedBrands" value={settings.excludedBrands.join(', ')} onChange={handleArraySettingsChange} fullWidth multiline rows={2} />
-          <TextField label="除外キーワード (カンマ区切り)" name="excludedKeywords" value={settings.excludedKeywords.join(', ')} onChange={handleArraySettingsChange} fullWidth multiline rows={2} />
+          <TextField label="除外ASIN (カンマ区切り)" name="excludedAsins" value={settings.excludedAsins?.join(', ')} onChange={handleArraySettingsChange} fullWidth multiline rows={2} />
+          <TextField label="除外ブランド (カンマ区切り)" name="excludedBrands" value={settings.excludedBrands?.join(', ')} onChange={handleArraySettingsChange} fullWidth multiline rows={2} />
+          <TextField label="除外キーワード (カンマ区切り)" name="excludedKeywords" value={settings.excludedKeywords?.join(', ')} onChange={handleArraySettingsChange} fullWidth multiline rows={2} />
 
           <ProfitabilityTiersTable tiers={settings.profitabilityTiers || []} onTiersChange={handleProfitabilityTiersChange} />
 

@@ -7,6 +7,7 @@ const CONFIG_DIR = path.join(DATA_DIR, 'config');
 const DEFAULT_SETTINGS = {
   domesticShippingCostPerItem: 500,
   customsDutyRate: 0.05,
+  amazonFeeRate: 0.15,
   exchangeRateJpyToUsd: 150,
   inventoryThreshold: 1,
   excludedAsins: [],
@@ -19,11 +20,6 @@ const DEFAULT_SETTINGS = {
     { fromPrice: 3001, toPrice: 5000, minProfitRate: 15, minProfitAmount: 700 },
     { fromPrice: 5001, toPrice: 10000, minProfitRate: 12, minProfitAmount: 1000 },
     { fromPrice: 10001, toPrice: 999999, minProfitRate: 10, minProfitAmount: 1500 }
-  ],
-  amazonFeeTiers: [
-    { category: 'DEFAULT', rate: 0.15 },
-    { category: '本', rate: 0.15 },
-    { category: '家電', rate: 0.10 }
   ],
   shippingCostTiers: [
     { fromWeight: 0, toWeight: 500, cost: 2000 },

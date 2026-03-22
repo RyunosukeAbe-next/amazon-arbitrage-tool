@@ -25,13 +25,13 @@ export interface ResearchLog {
 export interface AppSettings {
   domesticShippingCostPerItem: number;
   customsDutyRate: number;
+  amazonFeeRate: number;
   exchangeRateJpyToUsd: number;
   inventoryThreshold: number;
   excludedAsins: string[];
   excludedBrands: string[];
   excludedKeywords: string[];
   profitabilityTiers: ProfitabilityTier[];
-  amazonFeeTiers: AmazonFeeTier[];
   shippingCostTiers: ShippingCostTier[];
 }
 
@@ -40,11 +40,6 @@ export interface ProfitabilityTier {
   toPrice: number;
   minProfitRate: number;
   minProfitAmount: number;
-}
-
-export interface AmazonFeeTier {
-  category: string;
-  rate: number;
 }
 
 export interface ShippingCostTier {
