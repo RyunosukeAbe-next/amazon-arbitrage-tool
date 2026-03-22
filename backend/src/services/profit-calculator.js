@@ -5,20 +5,29 @@ function calculateProfit(product, settings) {
   const { usPrice, jpPrice, weight } = product;
 
   if (!jpPrice || jpPrice <= 0) {
-    return { /* ... (same zero-value return) ... */ };
+    return {
+      profitJpy: 0,
+      profitRate: 0,
+      procurementCostJpy: 0,
+      internationalShippingCostJpy: 0,
+      customsDutyJpy: 0,
+      amazonFeeJpy: 0,
+      sellingPriceJpy: 0,
+      totalCostJpy: 0,
+    };
   }
 
   const {
     domesticShippingCostPerItem,
     customsDutyRate,
-    amazonFeeRate, // Reverted to simple rate
+    amazonFeeRate,
     exchangeRateJpyToUsd,
     shippingCostTiers,
   } = settings;
 
   // 1. Amazon手数料の計算 (シンプルなレートに戻す)
   const sellingPriceJpy = usPrice * exchangeRateJpyToUsd;
-  const amazonFeeJpy = sellingPriceJpy * amazonFeeRate;
+  const amazonFeeJpy = sellingPriceJpy * (amazonFeeRate || 0.15);
 
   // 2. 国際送料の計算 (Tiered logic is kept)
   const parseWeight = (weightString) => {
@@ -38,8 +47,10 @@ function calculateProfit(product, settings) {
     if (shippingTier) {
       internationalShippingCostJpy = shippingTier.cost;
     } else if (itemWeightGrams > 0) {
-      // If weight is above all tiers, use the highest tier's cost as a fallback
-      internationalShippingCostJpy = shippingCostTiers[shippingCostTiers.length - 1].cost;
+      const highestTier = shippingCostTiers[shippingCostTiers.length - 1];
+      if (itemWeightGrams > highestTier.toWeight) {
+         internationalShippingCostJpy = highestTier.cost; // Use highest cost as fallback
+      }
     }
   }
 
