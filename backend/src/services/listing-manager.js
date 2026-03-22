@@ -1,7 +1,9 @@
 const fs = require('fs/promises');
 const path = require('path');
 
-const CONFIG_DIR = path.resolve(__dirname, '../../config');
+// Renderの永続ディスクに対応するため、DATA_DIR環境変数を参照
+const DATA_DIR = process.env.DATA_DIR || path.resolve(__dirname, '../../');
+const CONFIG_DIR = path.join(DATA_DIR, 'config');
 
 /**
  * ユーザーIDに基づいた出品リストファイルのパスを取得する

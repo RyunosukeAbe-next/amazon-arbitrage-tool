@@ -2,7 +2,9 @@ const fs = require('fs/promises');
 const path = require('path');
 const bcrypt = require('bcrypt');
 
-const USERS_FILE = path.resolve(__dirname, '../../config/users.json');
+const DATA_DIR = process.env.DATA_DIR || path.resolve(__dirname, '../../');
+const CONFIG_DIR = path.join(DATA_DIR, 'config');
+const USERS_FILE = path.join(CONFIG_DIR, 'users.json');
 
 /**
  * ユーザーリストをファイルから読み込む
