@@ -20,14 +20,28 @@ const SettingsTab: React.FC = () => {
     shippingCostTiers: []
   });
   const [loading, setLoading] = useState(true);
-  // ... (rest of state variables)
+  const [error, setError] = useState('');
+  const [savedMessage, setSavedMessage] = useState('');
+
+  const [isAmazonLinked, setIsAmazonLinked] = useState(false);
+  const [sellingPartnerId, setSellingPartnerId] = useState<string | null>(null);
+  const [linkedAt, setLinkedAt] = useState<string | null>(null);
 
   useEffect(() => {
     fetchSettings();
     fetchAmazonAuthStatus();
   }, []);
 
-  // ... (fetchAmazonAuthStatus)
+  const fetchAmazonAuthStatus = async () => {
+    try {
+      const response = await api.get('/amazon/auth-status');
+      setIsAmazonLinked(response.data.isLinked);
+      setSellingPartnerId(response.data.sellingPartnerId || null);
+      setLinkedAt(response.data.linkedAt || null);
+    } catch (err: any) {
+      console.error('Amazon認証ステータスの取得に失敗しました。', err);
+    }
+  };
 
   const fetchSettings = async () => {
     setLoading(true);
@@ -46,13 +60,21 @@ const SettingsTab: React.FC = () => {
   };
 
   const handleSettingsChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
-    // ... (same as before)
+    const { name, value } = e.target;
+    setSettings(prev => ({
+      ...prev,
+      [name]: name.includes('Rate') || name.includes('Cost') || name.includes('Threshold') ? parseFloat(value) || 0 : value
+    }));
   };
 
   const handleArraySettingsChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
-    // ... (same as before)
+    const { name, value } = e.target;
+    setSettings(prev => ({
+      ...prev,
+      [name]: value.split(',').map(item => item.trim()).filter(item => item !== '')
+    }));
   };
-  
+
   const handleProfitabilityTiersChange = (tiers: ProfitabilityTier[]) => {
     setSettings(prev => ({ ...prev, profitabilityTiers: tiers }));
   };
@@ -65,7 +87,47 @@ const SettingsTab: React.FC = () => {
     setSettings(prev => ({ ...prev, shippingCostTiers: tiers }));
   };
 
-  // ... (handleSaveSettings, handleLinkAmazon, etc.)
+  const handleSaveSettings = async () => {
+    setLoading(true);
+    setError('');
+    setSavedMessage('');
+    try {
+      await api.post('/settings', settings);
+      setSavedMessage('設定が保存されました！');
+    } catch (err: any) {
+      setError(err.response?.data?.error || '設定の保存に失敗しました。');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleLinkAmazon = async () => {
+    setLoading(true);
+    setError('');
+    setSavedMessage('');
+    try {
+      const response = await api.get('/amazon/authorize');
+      window.location.href = response.data.authorizationUrl;
+    } catch (err: any) {
+      setError(err.response?.data?.error || 'Amazon認証URLの取得に失敗しました。');
+      setLoading(false);
+    }
+  };
+
+  const handleDisconnectAmazon = async () => {
+    setLoading(true);
+    setError('');
+    setSavedMessage('');
+    try {
+      await api.delete('/amazon/disconnect');
+      setSavedMessage('Amazonアカウントの連携を解除しました。');
+      await fetchAmazonAuthStatus();
+    } catch (err: any) {
+      setError(err.response?.data?.error || 'Amazonアカウントの連携解除に失敗しました。');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
     <>
@@ -95,7 +157,40 @@ const SettingsTab: React.FC = () => {
 
           <ProfitabilityTiersTable tiers={settings.profitabilityTiers || []} onTiersChange={handleProfitabilityTiersChange} />
 
-          {/* ... (Amazon Link Box) ... */}
+          <Box sx={{ mt: 3, p: 2, border: '1px solid #ccc', borderRadius: '4px' }}>
+            <Typography variant="h6" gutterBottom>Amazonアカウント連携</Typography>
+            {isAmazonLinked ? (
+              <>
+                <Alert severity="success">
+                  Amazonアカウントと連携済みです。<br />
+                  Selling Partner ID: {sellingPartnerId}<br />
+                  連携日時: {linkedAt ? new Date(linkedAt).toLocaleString() : 'N/A'}
+                </Alert>
+                <Button 
+                  variant="outlined" 
+                  color="secondary" 
+                  onClick={handleDisconnectAmazon} 
+                  disabled={loading} 
+                  sx={{ mt: 2 }}
+                >
+                  Amazonアカウント連携を解除
+                </Button>
+              </>
+            ) : (
+              <>
+                <Alert severity="warning">Amazonアカウントは連携されていません。</Alert>
+                <Button 
+                  variant="contained" 
+                  onClick={handleLinkAmazon} 
+                  disabled={loading} 
+                  sx={{ mt: 2 }}
+                >
+                  Amazonアカウントと連携する
+                </Button>
+              </>
+            )}
+            {error && <Alert severity="error" sx={{ mt: 2 }}>{error}</Alert>}
+          </Box>
           
           <Box>
             <Button variant="contained" onClick={handleSaveSettings} disabled={loading}>設定を保存</Button>
