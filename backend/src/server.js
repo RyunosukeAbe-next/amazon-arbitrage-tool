@@ -27,7 +27,14 @@ const amazonAuthService = require('./services/amazon-auth-service');
 const app = express();
 const port = process.env.PORT || 3001;
 
-app.use(cors());
+app.use(cors({
+  origin: process.env.NODE_ENV === 'production' 
+    ? 'https://amazon-arbitrage-tool.onrender.com' 
+    : ['http://localhost:3000', 'http://localhost:3001'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true
+}));
 app.use(express.json());
 
 const US_MARKETPLACE_ID = 'ATVPDKIKX0DER';
@@ -116,7 +123,7 @@ authRouter.post('/amazon/save-auth', async (req, res) => {
 
 app.use('/api/auth', authRouter);
 
-// --- Amazonからのリダイレクトを直接受け取るエンドポイント (認証なし) ---
+// Amazonからのリダイレクトを直接受け取るエンドポイント (認証なし) ---
 // Amazonに登録されているリダイレクトURIがここを叩く
 app.get('/api/amazon/callback', async (req, res) => {
     const { code, state, selling_partner_id } = req.query;
@@ -126,12 +133,13 @@ app.get('/api/amazon/callback', async (req, res) => {
         return res.status(400).json({ error: '認証コードがありません。' });
     }
 
-    // フロントエンドのURLへリダイレクトして、フロントエンド側から save-auth を叩かせる
-    const frontendRedirectUrl = process.env.NODE_ENV === 'production' 
-        ? 'https://amazon-arbitrage-tool.onrender.com' 
+    // 本番環境（Render等）ではドメインを維持したままフロントエンドのルートへリダイレクト
+    // ローカル環境では localhost:3000 へリダイレクト
+    const frontendBaseUrl = process.env.NODE_ENV === 'production' 
+        ? '' // 相対パス（同じドメイン内）
         : 'http://localhost:3000';
 
-    res.redirect(`${frontendRedirectUrl}/amazon/callback?code=${code}&state=${state}&selling_partner_id=${selling_partner_id || ''}`);
+    res.redirect(`${frontendBaseUrl}/amazon/callback?code=${code}&state=${state}&selling_partner_id=${selling_partner_id || ''}`);
 });
 
 
