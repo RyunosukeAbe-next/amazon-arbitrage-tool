@@ -26,7 +26,9 @@ const AmazonCallbackPage: React.FC = () => {
 
       try {
         const token = localStorage.getItem('authToken');
-        // パスを /auth/amazon/save-auth に変更
+        
+        // api.ts の baseURL が `/api` で終わっている場合、`/auth/...` を呼ぶと `/api/auth/...` になります。
+        // バックエンドでは `app.use('/api/auth', authRouter)` としているのでこれで正しいです。
         const response = await api.post('/auth/amazon/save-auth', { 
           code, state, selling_partner_id: sellingPartnerId
         }, {

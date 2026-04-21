@@ -29,7 +29,7 @@ const port = process.env.PORT || 3001;
 
 app.use(cors({
   origin: process.env.NODE_ENV === 'production' 
-    ? 'https://amazon-arbitrage-tool.onrender.com' 
+    ? 'https://amazon-arbitrage-tool-1.onrender.com' 
     : ['http://localhost:3000', 'http://localhost:3001'],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
@@ -133,13 +133,12 @@ app.get('/api/amazon/callback', async (req, res) => {
         return res.status(400).json({ error: '認証コードがありません。' });
     }
 
-    // 本番環境（Render等）ではドメインを維持したままフロントエンドのルートへリダイレクト
-    // ローカル環境では localhost:3000 へリダイレクト
-    const frontendBaseUrl = process.env.NODE_ENV === 'production' 
-        ? '' // 相対パス（同じドメイン内）
+    // ★ 修正: フロントエンドのURLを正しいドメイン（-1あり）に指定
+    const frontendRedirectUrl = process.env.NODE_ENV === 'production' 
+        ? 'https://amazon-arbitrage-tool-1.onrender.com' 
         : 'http://localhost:3000';
 
-    res.redirect(`${frontendBaseUrl}/amazon/callback?code=${code}&state=${state}&selling_partner_id=${selling_partner_id || ''}`);
+    res.redirect(`${frontendRedirectUrl}/amazon/callback?code=${code}&state=${state}&selling_partner_id=${selling_partner_id || ''}`);
 });
 
 
