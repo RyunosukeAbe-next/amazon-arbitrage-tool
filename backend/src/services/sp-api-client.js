@@ -1,11 +1,15 @@
 const SpApi = require('amazon-sp-api');
 const amazonAuthService = require('./amazon-auth-service'); // ★ 追加
 
-// isAccessTokenExpired の簡易実装 (実際にはトークンの発行時刻とexpires_inを使って計算する)
-function isAccessTokenExpired(expiresIn) {
-    // 簡易的な実装: 常に期限切れとみなしてリフレッシュトークンを使う
-    // または、実際の有効期限チェックを実装
-    return true; // デモ用に常にリフレッシュと仮定
+// isAccessTokenExpired の実装
+function isAccessTokenExpired(authData) {
+    if (!authData.accessToken || !authData.issuedAt || !authData.expiresIn) {
+        return true;
+    }
+    const now = Date.now();
+    const expiryTime = authData.issuedAt + (authData.expiresIn * 1000);
+    const buffer = 5 * 60 * 1000; // 5分前のバッファ
+    return now > (expiryTime - buffer);
 }
 
 /**
@@ -22,12 +26,17 @@ async function getSpApiClient(marketplaceId, userId) {
 
     let accessToken = authData.accessToken;
     // アクセストークンが期限切れ、または存在しない場合は更新
-    // 簡易的に、毎回リフレッシュトークンで新しいアクセストークンを取得する (本来は有効期限を管理すべき)
-    if (!accessToken || isAccessTokenExpired(authData.expiresIn)) {
+    if (isAccessTokenExpired(authData)) {
+        console.log(`[User ${userId}] Access token expired or missing. Refreshing...`);
         const newTokens = await amazonAuthService.refreshAccessToken(authData.refreshToken);
         accessToken = newTokens.accessToken;
-        // 更新されたアクセストークンと有効期限を保存
-        await amazonAuthService.saveUserAmazonAuth(userId, { ...authData, accessToken: newTokens.accessToken, expiresIn: newTokens.expiresIn });
+        // 更新されたアクセストークンと有効期限、発行時刻を保存
+        await amazonAuthService.saveUserAmazonAuth(userId, { 
+            ...authData, 
+            accessToken: newTokens.accessToken, 
+            expiresIn: newTokens.expiresIn,
+            issuedAt: newTokens.issuedAt
+        });
     }
 
     const spApiRegion = marketplaceId === 'ATVPDKIKX0DER' ? 'na' : 'fe';
@@ -256,34 +265,50 @@ async function putListingsItem(asin, sku, price, quantity, marketplaceId, userId
         throw new Error('出品に必要な情報が不足しています。');
     }
     const spApiClient = await getSpApiClient(marketplaceId, userId);
-    // 実際の出品処理はspApiClientを使用
-    // return { status: 'SUCCESS', asin, sku, message: `ASIN ${asin} がSKU ${sku} で出品されました。（ダミー）` };
-    // ここからが本来の出品処理の実装
+
     try {
         const result = await spApiClient.callAPI({
             method: 'PUT',
             api_path: `/listings/2021-08-01/items/${sku}`,
             query: {
                 marketplaceIds: marketplaceId,
+                issueLocale: marketplaceId === 'ATVPDKIKX0DER' ? 'en_US' : 'ja_JP'
             },
             data: {
-                productType: 'PRODUCT', // または適切なproductType
-                requirements: 'LISTING_PRODUCT_ONLY', // または適切なrequirements
+                productType: 'PRODUCT', 
+                requirements: 'LISTING_OFFER_ONLY',
                 attributes: {
-                    // product attributes based on the asin
-                    // この部分はカタログAPIで取得した情報などから構築する必要があります
-                    // ダミー実装
-                    "conditionType": [
+                    merchant_suggested_asin: [
                         {
-                            "value": "new_new"
+                            value: asin,
+                            marketplace_id: marketplaceId
                         }
                     ],
-                    "offer_details": [
+                    condition_type: [
                         {
-                            "asin": asin,
-                            "currency": marketplaceId === 'ATVPDKIKX0DER' ? 'USD' : 'JPY', // 通貨をマーケットプレイスに応じて設定
-                            "price": price,
-                            "quantity": quantity,
+                            value: "new_new",
+                            marketplace_id: marketplaceId
+                        }
+                    ],
+                    purchasable_offer: [
+                        {
+                            marketplace_id: marketplaceId,
+                            currency: marketplaceId === 'ATVPDKIKX0DER' ? 'USD' : 'JPY',
+                            our_price: [
+                                {
+                                    schedule: [
+                                        {
+                                            value_with_tax: price
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    ],
+                    fulfillment_availability: [
+                        {
+                            fulfillment_channel_code: "DEFAULT",
+                            quantity: quantity
                         }
                     ]
                 }
@@ -291,7 +316,7 @@ async function putListingsItem(asin, sku, price, quantity, marketplaceId, userId
         });
         return { status: 'SUCCESS', asin, sku, message: `ASIN ${asin} がSKU ${sku} で出品されました。`, apiResponse: result };
     } catch (error) {
-        console.error(`Error listing item ${asin} with SKU ${sku}:`, error.response ? error.response.data : error.message);
+        console.error(`Error listing item ${asin} with SKU ${sku}:`, error.response ? JSON.stringify(error.response.data, null, 2) : error.message);
         throw new Error(`出品処理中にエラーが発生しました: ${error.message}`);
     }
 }

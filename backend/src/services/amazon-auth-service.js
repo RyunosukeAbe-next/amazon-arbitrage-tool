@@ -65,7 +65,8 @@ function getAuthorizationUrl(state) {
     if (!clientId || !redirectUri) {
         throw new Error('AMAZON_CLIENT_IDまたはAMAZON_REDIRECT_URIが設定されていません。');
     }
-    return `https://sellercentral.amazon.com/apps/authorize/consent?application_id=${clientId}&state=${state}&version=beta&redirect_uri=${redirectUri}`;
+    // LWA (Login with Amazon) のエンドポイントに修正
+    return `https://www.amazon.com/ap/oa?client_id=${clientId}&scope=sellingpartnerapi::notifications&response_type=code&redirect_uri=${redirectUri}&state=${state}&version=beta`;
 }
 
 /**
@@ -102,6 +103,7 @@ async function exchangeCodeForTokens(code) {
             refreshToken: response.data.refresh_token,
             accessToken: response.data.access_token,
             expiresIn: response.data.expires_in,
+            issuedAt: Date.now()
         };
     } catch (error) {
         console.error('Failed to exchange code for tokens:', error.response ? error.response.data : error.message);
@@ -112,7 +114,7 @@ async function exchangeCodeForTokens(code) {
 /**
  * リフレッシュトークンを使用してアクセストークンを更新する
  * @param {string} refreshToken
- * @returns {Promise<object>} 新しいアクセストークン情報 { accessToken, expiresIn }
+ * @returns {Promise<object>} 新しいアクセストークン情報 { accessToken, expiresIn, issuedAt }
  */
 async function refreshAccessToken(refreshToken) {
     const clientId = process.env.AMAZON_CLIENT_ID;
@@ -140,6 +142,7 @@ async function refreshAccessToken(refreshToken) {
         return {
             accessToken: response.data.access_token,
             expiresIn: response.data.expires_in,
+            issuedAt: Date.now()
         };
     } catch (error) {
         console.error('Failed to refresh access token:', error.response ? error.response.data : error.message);

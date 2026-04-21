@@ -25,8 +25,14 @@ const AmazonCallbackPage: React.FC = () => {
       }
 
       try {
-        const response = await api.get('/amazon/callback', { 
-          params: { code, state, selling_partner_id: sellingPartnerId } 
+        const token = localStorage.getItem('authToken');
+        // パスを /auth/amazon/save-auth に変更
+        const response = await api.post('/auth/amazon/save-auth', { 
+          code, state, selling_partner_id: sellingPartnerId
+        }, {
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
         });
         setMessage(response.data.message || 'Amazonアカウントとの連携に成功しました！');
         setSeverity('success');
