@@ -94,14 +94,15 @@ authRouter.post('/amazon/save-auth', async (req, res) => {
     try {
         const user = jwt.verify(token, process.env.JWT_SECRET);
         const userId = user.userId;
-        const { code, selling_partner_id } = req.body;
+        const { code, spapi_oauth_code, selling_partner_id } = req.body;
+        const authCode = code || spapi_oauth_code;
 
-        if (!code) {
+        if (!authCode) {
             return res.status(400).json({ error: '認証コードがありません。' });
         }
 
         console.log(`[User ${userId}] Exchanging Amazon authorization code for tokens (via save-auth).`);
-        const tokens = await amazonAuthService.exchangeCodeForTokens(code);
+        const tokens = await amazonAuthService.exchangeCodeForTokens(authCode);
         
         await amazonAuthService.saveUserAmazonAuth(userId, {
             ...tokens,
@@ -126,19 +127,22 @@ app.use('/api/auth', authRouter);
 // Amazonからのリダイレクトを直接受け取るエンドポイント (認証なし) ---
 // Amazonに登録されているリダイレクトURIがここを叩く
 app.get('/api/amazon/callback', async (req, res) => {
-    const { code, state, selling_partner_id } = req.query;
+    const { code, spapi_oauth_code, state, selling_partner_id } = req.query;
     console.log(`[Amazon Callback] Received callback with code and state.`);
 
-    if (!code) {
+    const authCode = code || spapi_oauth_code;
+
+    if (!authCode) {
         return res.status(400).json({ error: '認証コードがありません。' });
     }
 
-    // ★ 修正: フロントエンドのURLを正しいドメイン（-1あり）に指定
+    // 本番環境（Render等）ではドメインを維持したままフロントエンドのルートへリダイレクト
+    // ローカル環境では localhost:3000 へリダイレクト
     const frontendRedirectUrl = process.env.NODE_ENV === 'production' 
         ? 'https://amazon-arbitrage-tool-1.onrender.com' 
         : 'http://localhost:3000';
 
-    res.redirect(`${frontendRedirectUrl}/amazon/callback?code=${code}&state=${state}&selling_partner_id=${selling_partner_id || ''}`);
+    res.redirect(`${frontendRedirectUrl}/amazon/callback?code=${authCode}&state=${state}&selling_partner_id=${selling_partner_id || ''}`);
 });
 
 

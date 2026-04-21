@@ -12,14 +12,13 @@ const AmazonCallbackPage: React.FC = () => {
   useEffect(() => {
     const processCallback = async () => {
       const params = new URLSearchParams(location.search);
-      const code = params.get('code');
+      const code = params.get('code') || params.get('spapi_oauth_code'); // 両方のパラメータ名に対応
       const state = params.get('state');
       const sellingPartnerId = params.get('selling_partner_id'); // SP-APIからの情報
 
-      if (!code || !state) {
-        setMessage('Amazon認証情報が不足しています。');
+      if (!code) {
+        setMessage('Amazon認証情報（code）が不足しています。');
         setSeverity('error');
-        // エラー後、ダッシュボードの設定タブにリダイレクト
         setTimeout(() => navigate('/?tab=settings'), 3000);
         return;
       }
