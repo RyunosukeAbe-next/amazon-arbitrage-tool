@@ -1,8 +1,8 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom'; // 追加
 import {
   Container, Typography, Box, Tabs, Tab, AppBar, Toolbar, Button,
-  Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Paper
+  TableContainer, Paper
 } from '@mui/material';
 import LogoutIcon from '@mui/icons-material/Logout';
 import { useAuth } from '../contexts/AuthContext';
@@ -16,6 +16,8 @@ import ResearchLogsTab from '../components/dashboard/ResearchLogsTab';
 import ListingLogsTab from '../components/dashboard/ListingLogsTab'; // ★ 追加
 import BulkListingTab from '../components/dashboard/BulkListingTab';
 import SettingsTab from '../components/dashboard/SettingsTab';
+
+const SEARCH_QUEUE_STORAGE_KEY = 'activeSearchQueue';
 
 // 型定義
 export interface ProductResult {
@@ -60,13 +62,32 @@ const DashboardPage: React.FC = () => {
   const initialTab = searchParams.get('tab') === 'settings' ? 6 : 0; // 追加
 
   const [currentTab, setCurrentTab] = useState(initialTab); // 変更
-  const [searchQueue, setSearchQueue] = useState<SearchJob[]>([]);
+  const [searchQueue, setSearchQueue] = useState<SearchJob[]>(() => {
+    try {
+      const storedQueue = localStorage.getItem(SEARCH_QUEUE_STORAGE_KEY);
+      if (!storedQueue) return [];
+      const parsedQueue = JSON.parse(storedQueue);
+      if (!Array.isArray(parsedQueue)) return [];
+      return parsedQueue.map((job: SearchJob) => ({
+        ...job,
+        status: job.status === 'fetching' ? 'fetching' : 'waiting',
+      }));
+    } catch (error) {
+      console.error('Failed to load active search queue', error);
+      return [];
+    }
+  });
   const [completedSearchResults, setCompletedSearchResults] = useState<ProductResult[]>([]);
   
   // searchQueueの最新の状態をrefで保持（useEffectのクロージャ問題を回避するため）
   const queueRef = useRef(searchQueue);
   useEffect(() => {
     queueRef.current = searchQueue;
+  }, [searchQueue]);
+
+  useEffect(() => {
+    const queueToStore = searchQueue.map(({ abortController, ...job }) => job);
+    localStorage.setItem(SEARCH_QUEUE_STORAGE_KEY, JSON.stringify(queueToStore));
   }, [searchQueue]);
 
   // キュープロセッサー
@@ -147,6 +168,21 @@ const DashboardPage: React.FC = () => {
     }
   };
 
+  const handlePruneCompletedJobs = useCallback((logs: any[]) => {
+    setSearchQueue(prev => prev.filter(job => {
+      const jobStartedAt = new Date(job.id.split('-')[0]).getTime();
+      const matchingCompletedLog = logs.some(log => {
+        const logCreatedAt = new Date(log.createdAt).getTime();
+        return (
+          Number.isFinite(jobStartedAt) &&
+          logCreatedAt >= jobStartedAt &&
+          String(log.query || '') === String(job.params?.query || '')
+        );
+      });
+      return !matchingCompletedLog;
+    }));
+  }, []);
+
   return (
     <>
       <AppBar position="static">
@@ -182,7 +218,7 @@ const DashboardPage: React.FC = () => {
           <AsinSearchTab onAddToQueue={handleAddToQueue} />
         </TabPanel>
         <TabPanel value={currentTab} index={3}>
-          <ResearchLogsTab activeJobs={searchQueue} onCancelJob={handleCancelJob} />
+          <ResearchLogsTab activeJobs={searchQueue} onCancelJob={handleCancelJob} onLogsLoaded={handlePruneCompletedJobs} />
           {completedSearchResults.length > 0 && (
             <Box mt={4}>
               <Typography variant="h5" component="h2" gutterBottom>

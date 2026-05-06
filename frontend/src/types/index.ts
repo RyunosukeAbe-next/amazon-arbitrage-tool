@@ -5,9 +5,11 @@ export interface Product {
   usPrice: number;
   jpPrice: number;
   usSellerCount: number;
+  jpSellerCount?: number;
   profitJpy?: number;
   profitRate?: number;
   isExcluded?: boolean;
+  productType?: string;
 }
 
 export interface ResearchLog {
@@ -24,10 +26,18 @@ export interface ResearchLog {
 
 export interface AppSettings {
   domesticShippingCostPerItem: number;
+  internationalShippingFscRate: number;
+  internationalShippingFixedFeeJpy: number;
   customsDutyRate: number;
   amazonFeeRate: number;
   exchangeRateJpyToUsd: number;
+  autoExchangeRateEnabled: boolean;
+  exchangeRateRefreshIntervalMinutes: number;
+  exchangeRateUpdatedAt?: string | null;
+  exchangeRateDate?: string | null;
+  exchangeRateSource?: string | null;
   inventoryThreshold: number;
+  leadTimeBuffer: number;
   excludedAsins: string[];
   excludedBrands: string[];
   excludedKeywords: string[];

@@ -39,14 +39,14 @@ const ShippingCostTiersTable: React.FC<ShippingCostTiersTableProps> = ({ tiers, 
 
   return (
     <Box sx={{ mt: 3, p: 2, border: '1px solid #ccc', borderRadius: '4px' }}>
-      <Typography variant="h6" gutterBottom>重量別 国際送料設定</Typography>
+      <Typography variant="h6" gutterBottom>重量別 国際送料 基本運賃設定</Typography>
       <TableContainer component={Paper}>
         <Table size="small">
           <TableHead>
             <TableRow>
               <TableCell>重量 (From g)</TableCell>
               <TableCell>重量 (To g)</TableCell>
-              <TableCell>送料 (円)</TableCell>
+              <TableCell>基本運賃 (円・FSC前)</TableCell>
               <TableCell align="right">アクション</TableCell>
             </TableRow>
           </TableHead>

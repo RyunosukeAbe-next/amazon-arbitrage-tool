@@ -10,6 +10,9 @@ function calculateProfit(product, settings) {
       profitRate: 0,
       procurementCostJpy: 0,
       internationalShippingCostJpy: 0,
+      internationalShippingBaseCostJpy: 0,
+      internationalShippingFscJpy: 0,
+      internationalShippingFixedFeeJpy: 0,
       customsDutyJpy: 0,
       amazonFeeJpy: 0,
       sellingPriceJpy: 0,
@@ -23,6 +26,8 @@ function calculateProfit(product, settings) {
     amazonFeeRate,
     exchangeRateJpyToUsd,
     shippingCostTiers,
+    internationalShippingFscRate,
+    internationalShippingFixedFeeJpy,
   } = settings;
 
   // 1. Amazon手数料の計算 (シンプルなレートに戻す)
@@ -35,29 +40,41 @@ function calculateProfit(product, settings) {
     const parts = weightString.toLowerCase().split(' ');
     const value = parseFloat(parts[0]) || 0;
     const unit = parts[1] || 'g';
-    if (unit === 'kg') return value * 1000;
-    if (unit === 'ounces' || unit === 'oz') return value * 28.35;
-    if (unit === 'pounds' || unit === 'lb') return value * 453.592;
+    if (unit === 'kg' || unit === 'kilogram' || unit === 'kilograms') return value * 1000;
+    if (unit === 'g' || unit === 'gram' || unit === 'grams') return value;
+    if (unit === 'ounce' || unit === 'ounces' || unit === 'oz') return value * 28.35;
+    if (unit === 'pound' || unit === 'pounds' || unit === 'lb' || unit === 'lbs') return value * 453.592;
     return value; // Assume grams if no unit or unknown unit
   };
   const itemWeightGrams = parseWeight(weight);
+  let internationalShippingBaseCostJpy = 0;
+  let internationalShippingFscJpy = 0;
+  let appliedInternationalShippingFixedFeeJpy = 0;
   let internationalShippingCostJpy = 0;
   if (shippingCostTiers && shippingCostTiers.length > 0) {
     const shippingTier = shippingCostTiers.find(t => itemWeightGrams >= t.fromWeight && itemWeightGrams <= t.toWeight);
     if (shippingTier) {
-      internationalShippingCostJpy = shippingTier.cost;
+      internationalShippingBaseCostJpy = shippingTier.cost;
     } else if (itemWeightGrams > 0) {
       const highestTier = shippingCostTiers[shippingCostTiers.length - 1];
       if (itemWeightGrams > highestTier.toWeight) {
-         internationalShippingCostJpy = highestTier.cost; // Use highest cost as fallback
+         internationalShippingBaseCostJpy = highestTier.cost; // Use highest cost as fallback
       }
     }
+  }
+  if (internationalShippingBaseCostJpy > 0) {
+    const fscRate = Number(internationalShippingFscRate) || 0;
+    internationalShippingFscJpy = internationalShippingBaseCostJpy * fscRate;
+    appliedInternationalShippingFixedFeeJpy = Number(internationalShippingFixedFeeJpy) || 0;
+    internationalShippingCostJpy = internationalShippingBaseCostJpy + internationalShippingFscJpy + appliedInternationalShippingFixedFeeJpy;
   }
 
   // 3. その他のコスト計算
   const procurementCostJpy = jpPrice;
   const dutiableValueJpy = procurementCostJpy + internationalShippingCostJpy;
-  const customsDutyJpy = dutiableValueJpy * customsDutyRate;
+  const baseCustomsDutyJpy = dutiableValueJpy * customsDutyRate;
+  // DDP: 関税額に関税立替手数料(2%)を加算
+  const customsDutyJpy = baseCustomsDutyJpy * 1.02;
   const totalCostJpy = procurementCostJpy + internationalShippingCostJpy + customsDutyJpy + amazonFeeJpy + (domesticShippingCostPerItem || 0);
 
   // 4. 利益計算
@@ -69,6 +86,9 @@ function calculateProfit(product, settings) {
     profitRate,
     procurementCostJpy,
     internationalShippingCostJpy,
+    internationalShippingBaseCostJpy,
+    internationalShippingFscJpy,
+    internationalShippingFixedFeeJpy: appliedInternationalShippingFixedFeeJpy,
     customsDutyJpy,
     amazonFeeJpy,
     sellingPriceJpy,

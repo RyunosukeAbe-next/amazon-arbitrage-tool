@@ -1,5 +1,5 @@
 const cron = require('node-cron');
-const { loadTrackedListings, removeTrackedListing } = require('./listing-manager');
+const { loadTrackedListings, removeTrackedListing, addSuspendedListing } = require('./listing-manager');
 const { getCompetitivePricingForAsins, deleteListingsItem } = require('./sp-api-client');
 const { loadSettings } = require('./settings-manager');
 const { getAllUsers } = require('./user-manager');
@@ -94,6 +94,7 @@ async function checkInventoryForUser(userId) {
         console.log(`[ユーザーID: ${userId}][出品取下] SKU: ${listing.sku} が利益基準を満たさなくなりました。理由: ${exclusionInfo.reason}。出品を削除します。`);
         try {
           await deleteListingsItem(listing.sku, listing.marketplaceId, userId);
+          await addSuspendedListing(userId, listing, 'profitability', exclusionInfo.reason);
           await removeTrackedListing(userId, listing.sku, listing.marketplaceId);
           console.log(`[ユーザーID: ${userId}][出品取下成功] SKU: ${listing.sku} を削除しました。`);
         } catch (error) {

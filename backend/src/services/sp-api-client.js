@@ -1,6 +1,27 @@
 const SpApi = require('amazon-sp-api');
 const amazonAuthService = require('./amazon-auth-service'); // ★ 追加
 
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+async function callApiWithRetries(spApiClient, request, label, maxRetries = 3) {
+    let lastError;
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+            return await spApiClient.callAPI(request);
+        } catch (error) {
+            lastError = error;
+            const status = error.response?.status || error.statusCode;
+            const retryable = !status || status === 429 || status >= 500;
+            console.warn(`${label} failed on attempt ${attempt}/${maxRetries}: ${error.message}`);
+            if (!retryable || attempt === maxRetries) {
+                break;
+            }
+            await sleep(1500 * attempt);
+        }
+    }
+    throw lastError;
+}
+
 // isAccessTokenExpired の実装
 function isAccessTokenExpired(authData) {
     if (!authData.accessToken || !authData.issuedAt || !authData.expiresIn) {
@@ -24,22 +45,14 @@ async function getSpApiClient(marketplaceId, userId) {
         throw new Error(`User ${userId} has not linked their Amazon account or missing required auth data.`);
     }
 
-    let accessToken = authData.accessToken;
-    // アクセストークンが期限切れ、または存在しない場合は更新
-    if (isAccessTokenExpired(authData)) {
-        console.log(`[User ${userId}] Access token expired or missing. Refreshing...`);
-        const newTokens = await amazonAuthService.refreshAccessToken(authData.refreshToken);
-        accessToken = newTokens.accessToken;
-        // 更新されたアクセストークンと有効期限、発行時刻を保存
-        await amazonAuthService.saveUserAmazonAuth(userId, { 
-            ...authData, 
-            accessToken: newTokens.accessToken, 
-            expiresIn: newTokens.expiresIn,
-            issuedAt: newTokens.issuedAt
-        });
-    }
-
-    const spApiRegion = marketplaceId === 'ATVPDKIKX0DER' ? 'na' : 'fe';
+    // 日本 (A1VC38T7YXB528) は 'fe' (Far East), 米国 (ATVPDKIKX0DER) は 'na' (North America)
+    const isJP = marketplaceId === 'A1VC38T7YXB528';
+    const spApiRegion = isJP ? 'fe' : 'na';
+    
+    // 日本用の場合は .env の SPAPI_REFRESH_TOKEN_JP があればそれを最優先、無ければDB保存分
+    const refreshTokenToUse = isJP && process.env.SPAPI_REFRESH_TOKEN_JP 
+        ? process.env.SPAPI_REFRESH_TOKEN_JP 
+        : authData.refreshToken;
 
     const spApiConfig = {
         region: spApiRegion,
@@ -50,16 +63,23 @@ async function getSpApiClient(marketplaceId, userId) {
             AWS_SECRET_ACCESS_KEY: process.env.SPAPI_AWS_SECRET_ACCESS_KEY,
             AWS_SELLING_PARTNER_ROLE: process.env.SPAPI_ROLE_ARN,
         },
-        refresh_token: authData.refreshToken, // ユーザー固有のリフレッシュトークンを使用
-        access_token: accessToken, // 更新されたアクセストークンを使用
-        selling_partner_id: authData.sellingPartnerId, // ユーザー固有のSelling Partner IDを使用
+        refresh_token: refreshTokenToUse, 
+        // access_token を渡さないことで、ライブラリが指定されたリージョン用のトークンを自動取得・リフレッシュする
     };
 
-    if (!spApiConfig.refresh_token || !spApiConfig.credentials.AWS_ACCESS_KEY_ID || !spApiConfig.credentials.SELLING_PARTNER_APP_CLIENT_ID) {
-        throw new Error(`SP-APIの認証情報が.envファイルに不足しています。`);
+    // 日本リージョンの場合はエンドポイントを明示
+    if (isJP) {
+        spApiConfig.endpoint = 'https://sellingpartnerapi-fe.amazon.com';
     }
 
-    return new SpApi(spApiConfig);
+    if (!spApiConfig.refresh_token || !spApiConfig.credentials.AWS_ACCESS_KEY_ID || !spApiConfig.credentials.SELLING_PARTNER_APP_CLIENT_ID) {
+        throw new Error(`SP-APIの認証情報が不足しています（リージョン: ${spApiRegion}）。`);
+    }
+
+    return {
+        client: new SpApi(spApiConfig),
+        sellingPartnerId: authData.sellingPartnerId
+    };
 }
 
 /**
@@ -77,11 +97,12 @@ async function searchProductsByKeywords(keywords, marketplaceId, userId, classif
     logPrefix += `):`;
     console.log(`${logPrefix} Searching in marketplace '${marketplaceId}'`);
     
-    const spApiClient = await getSpApiClient(marketplaceId, userId);
+    const { client: spApiClient } = await getSpApiClient(marketplaceId, userId);
     let allProducts = [];
     let nextToken = undefined;
+    const seenAsins = new Set();
+    const seenTokens = new Set();
     const MAX_RESULTS = 1000;
-    const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
     let page = 1;
 
     do {
@@ -102,7 +123,7 @@ async function searchProductsByKeywords(keywords, marketplaceId, userId, classif
         }
 
         if (nextToken) {
-            queryParams.nextToken = nextToken;
+            queryParams.pageToken = nextToken;
         }
 
         try {
@@ -116,15 +137,29 @@ async function searchProductsByKeywords(keywords, marketplaceId, userId, classif
             });
 
             if (res.items && res.items.length > 0) {
-                const products = res.items.map(item => ({
-                    asin: item.asin,
-                    productName: item.summaries?.[0]?.itemName || 'N/A',
-                    brand: item.summaries?.[0]?.brand || 'N/A',
-                }));
+                const products = res.items
+                    .filter(item => {
+                        if (!item.asin || seenAsins.has(item.asin)) {
+                            return false;
+                        }
+                        seenAsins.add(item.asin);
+                        return true;
+                    })
+                    .map(item => ({
+                        asin: item.asin,
+                        productName: item.summaries?.[0]?.itemName || 'N/A',
+                        brand: item.summaries?.[0]?.brand || 'N/A',
+                    }));
                 allProducts = allProducts.concat(products);
             }
             
             nextToken = res.pagination?.nextToken;
+            if (nextToken && seenTokens.has(nextToken)) {
+                console.warn(`${logPrefix} Same pagination token was returned again. Stopping to avoid duplicate loop.`);
+                nextToken = undefined;
+            } else if (nextToken) {
+                seenTokens.add(nextToken);
+            }
             page++;
 
         } catch (error) {
@@ -140,6 +175,62 @@ async function searchProductsByKeywords(keywords, marketplaceId, userId, classif
 }
 
 /**
+ * 単一ASINの全オファー（出品者一覧）から最安値を取得する（フォールバック用）
+ */
+async function getLowestOfferPrice(spApiClient, asin, marketplaceId) {
+    try {
+        console.log(`[Pricing Fallback] Calling getItemOffers for ASIN ${asin} in ${marketplaceId}...`);
+        const res = await spApiClient.callAPI({
+            method: 'GET',
+            api_path: `/products/pricing/v0/items/${asin}/offers`,
+            query: {
+                MarketplaceId: marketplaceId,
+                ItemCondition: 'New',
+            },
+        });
+
+        if (res && res.Offers) {
+            console.log(`[Pricing Fallback] Received ${res.Offers.length} raw offers for ASIN ${asin}`);
+            if (res.Offers.length > 0) {
+                // デバッグ用に最初のオファーのコンディションを出力
+                console.log(`[Pricing Fallback] First raw offer details - Condition: ${res.Offers[0].Condition}, SubCondition: ${res.Offers[0].SubCondition}`);
+                
+                // Newコンディションのオファーのみフィルタリングし、最安値を計算（ListingPrice + Shipping）
+                // APIは小文字の 'new' を返す場合があるため、toLowerCase() で比較する
+                const newOffers = res.Offers.filter(offer => {
+                    const subCond = (offer.SubCondition || '').toLowerCase();
+                    const cond = (offer.Condition || '').toLowerCase();
+                    return subCond === 'new' || cond === 'new';
+                });
+                console.log(`[Pricing Fallback] Found ${newOffers.length} 'New' offers after filtering.`);
+                
+                if (newOffers.length > 0) {
+                    // LandedPrice（送料込み価格）でソートして最安値を取得
+                    newOffers.sort((a, b) => {
+                        const priceA = (a.ListingPrice?.Amount || 0) + (a.Shipping?.Amount || 0);
+                        const priceB = (b.ListingPrice?.Amount || 0) + (b.Shipping?.Amount || 0);
+                        return priceA - priceB;
+                    });
+                    const lowestOffer = newOffers[0];
+                    const lowestPrice = (lowestOffer.ListingPrice?.Amount || 0) + (lowestOffer.Shipping?.Amount || 0);
+                    return { price: lowestPrice, sellerCount: newOffers.length };
+                }
+            }
+        } else {
+             console.log(`[Pricing Fallback] No Offers array in response for ASIN ${asin}. Raw response keys:`, Object.keys(res || {}));
+        }
+        return null;
+    } catch (error) {
+        // 400エラー等（該当ASINのオファー取得不可）はログを出して握りつぶす
+        console.warn(`[Pricing Fallback] Failed to get offers for ASIN ${asin} in ${marketplaceId}:`, error.message);
+        if (error.response && error.response.data) {
+             console.warn(`[Pricing Fallback Error Data]:`, JSON.stringify(error.response.data));
+        }
+        return null;
+    }
+}
+
+/**
  * 複数のASINの競合価格情報を取得する
  * @param {string[]} asins ASINの配列
  * @param {string} marketplaceId 取得対象のマーケットプレイスID
@@ -152,7 +243,7 @@ async function getCompetitivePricingForAsins(asins, marketplaceId, userId, isCan
     }
     console.log(`SP-API Pricing: Getting prices for ${asins.length} ASINs in ${marketplaceId}`);
     
-    const spApiClient = await getSpApiClient(marketplaceId, userId);
+    const { client: spApiClient } = await getSpApiClient(marketplaceId, userId);
     const allPricing = {};
 
     const chunkSize = 20;
@@ -164,7 +255,7 @@ async function getCompetitivePricingForAsins(asins, marketplaceId, userId, isCan
         const chunk = asins.slice(i, i + chunkSize);
         
         try {
-            const res = await spApiClient.callAPI({
+            const res = await callApiWithRetries(spApiClient, {
                 method: 'GET',
                 api_path: '/products/pricing/v0/competitivePrice',
                 query: {
@@ -172,16 +263,25 @@ async function getCompetitivePricingForAsins(asins, marketplaceId, userId, isCan
                     Asins: chunk.join(','),
                     ItemType: 'Asin',
                 },
-            });
+            }, `SP-API Pricing (${marketplaceId}) chunk ${Math.floor(i / chunkSize) + 1}`);
 
             if (Array.isArray(res)) {
                 for (const result of res) { 
                     if (result.status === 'Success' && result.Product) {
-                        const competitivePrices = competitivePricing?.CompetitivePrices || [];
+                        const productData = result.Product;
+                        const competitivePricing = productData.CompetitivePricing || {};
+                        const competitivePrices = competitivePricing.CompetitivePrices || [];
                         const newPriceObject = competitivePrices.find(p => p.condition === 'New');
-                        const landedPrice = newPriceObject?.Price?.LandedPrice?.Amount;
+                        
+                        // BuyBox (LandedPrice) を取得
+                        let landedPrice = newPriceObject?.Price?.LandedPrice?.Amount;
+                        
+                        // もしBuyBox価格がない場合は、ListingPrice (商品自体の価格) を代替として探す
+                        if (landedPrice === undefined) {
+                            landedPrice = newPriceObject?.Price?.ListingPrice?.Amount;
+                        }
 
-                        const offerListings = competitivePricing?.NumberOfOfferListings || [];
+                        const offerListings = competitivePricing.NumberOfOfferListings || [];
                         const newOffer = offerListings.find(offer => offer.condition === 'New');
                         const sellerCount = newOffer ? newOffer.Count : 0;
 
@@ -189,13 +289,41 @@ async function getCompetitivePricingForAsins(asins, marketplaceId, userId, isCan
                             allPricing[result.ASIN] = {
                                 price: landedPrice,
                                 sellerCount: sellerCount,
+                                // 日本のリードタイム情報の器を用意（将来的にoffers API等で取得可能）
+                                leadTime: marketplaceId === 'A1VC38T7YXB528' ? 2 : undefined, 
                             };
+                        } else {
+                            console.log(`[Pricing] ASIN ${result.ASIN} has no active BuyBox in ${marketplaceId}. Attempting fallback to item offers...`);
+                            
+                            // フォールバック: カートがない場合は、個別にオファーAPIを叩いて最安値を取得する
+                            // スロットルエラーを避けるために少し待機
+                            await new Promise(resolve => setTimeout(resolve, 500)); 
+                            
+                            console.log(`[Pricing Debug] Actually calling getLowestOfferPrice now for ${result.ASIN}`);
+                            const fallbackData = await getLowestOfferPrice(spApiClient, result.ASIN, marketplaceId);
+                            console.log(`[Pricing Debug] getLowestOfferPrice returned:`, fallbackData);
+                            
+                            if (fallbackData && fallbackData.price > 0) {
+                                console.log(`[Pricing] ASIN ${result.ASIN} fallback successful. Found lowest price: ${fallbackData.price} (Sellers: ${fallbackData.sellerCount})`);
+                                allPricing[result.ASIN] = { 
+                                    price: fallbackData.price, 
+                                    sellerCount: fallbackData.sellerCount, 
+                                    leadTime: marketplaceId === 'A1VC38T7YXB528' ? 2 : undefined 
+                                };
+                            } else {
+                                console.log(`[Pricing] ASIN ${result.ASIN} fallback failed or no new offers found.`);
+                                allPricing[result.ASIN] = { price: 0, sellerCount: 0, leadTime: marketplaceId === 'A1VC38T7YXB528' ? 2 : undefined };
+                            }
                         }
                     }
                 }
             }
         } catch (error) {
             console.error(`SP-API Pricing (${marketplaceId}) のチャンク処理中にエラーが発生しました:`, error);
+        }
+
+        if (i + chunkSize < asins.length) {
+            await sleep(1200);
         }
     }
     
@@ -212,7 +340,7 @@ async function getCompetitivePricingForAsins(asins, marketplaceId, userId, isCan
 async function getCatalogItemAttributes(asin, marketplaceId, userId) {
     console.log(`SP-API Catalog: Getting attributes for ASIN ${asin} in ${marketplaceId}`);
     
-    const spApiClient = await getSpApiClient(marketplaceId, userId);
+    const { client: spApiClient } = await getSpApiClient(marketplaceId, userId);
 
     try {
         const res = await spApiClient.callAPI({
@@ -259,24 +387,40 @@ async function getCatalogItemAttributes(asin, marketplaceId, userId) {
 
 
 // (他のダミー関数は変更なし)
-async function putListingsItem(asin, sku, price, quantity, marketplaceId, userId) {
-    console.log(`SP-API Listing: Attempting to list ASIN ${asin} on ${marketplaceId}`);
-    if (!asin || !sku || !price || !quantity || !marketplaceId) {
+async function putListingsItem(asin, sku, price, quantity, marketplaceId, userId, productType = 'GENERIC', handlingTime = 2) {
+    // 汎用的な 'PRODUCT' が指定された場合はエラーになりやすいため、できる限り具体的な productType を使用するか、
+    // あるいは 'GENERIC' などの他の安全なデフォルトを使用する。
+    // 今回は呼び出し元から渡された productType をそのまま使用し、'PRODUCT' の場合は 'GENERIC' にフォールバックする
+    const typeToUse = (productType && productType !== 'PRODUCT') ? productType : 'GENERIC'; 
+    console.log(`SP-API Listing: Attempting to list ASIN ${asin} (Product Type: ${typeToUse}, Original: ${productType}) on ${marketplaceId}`);
+    
+    if (!asin || !sku || !price || !marketplaceId) {
         throw new Error('出品に必要な情報が不足しています。');
     }
-    const spApiClient = await getSpApiClient(marketplaceId, userId);
+    
+    const { client: spApiClient, sellingPartnerId } = await getSpApiClient(marketplaceId, userId);
+
+    if (!sellingPartnerId) {
+        throw new Error('セラーIDが取得できません。');
+    }
+
+    const numericPrice = parseFloat(price);
+    const numericQuantity = Math.max(1, parseInt(quantity, 10) || 1);
+    const numericHandlingTime = Math.max(1, parseInt(handlingTime, 10) || 2);
+
+    console.log(`SP-API Listing: SKU=${sku}, Qty=${numericQuantity}, Price=${numericPrice}, LeadTime=${numericHandlingTime}`);
 
     try {
         const result = await spApiClient.callAPI({
             method: 'PUT',
-            api_path: `/listings/2021-08-01/items/${sku}`,
+            api_path: `/listings/2021-08-01/items/${sellingPartnerId}/${sku}`,
             query: {
-                marketplaceIds: marketplaceId,
-                issueLocale: marketplaceId === 'ATVPDKIKX0DER' ? 'en_US' : 'ja_JP'
+                marketplaceIds: [marketplaceId],
             },
-            data: {
-                productType: 'PRODUCT', 
-                requirements: 'LISTING_OFFER_ONLY',
+            body: {
+                productType: typeToUse, 
+                // 既存のASINに対して「オファー（価格と在庫）」のみを更新することを明示
+                requirements: 'LISTING_OFFER_ONLY', 
                 attributes: {
                     merchant_suggested_asin: [
                         {
@@ -292,32 +436,78 @@ async function putListingsItem(asin, sku, price, quantity, marketplaceId, userId
                     ],
                     purchasable_offer: [
                         {
-                            marketplace_id: marketplaceId,
                             currency: marketplaceId === 'ATVPDKIKX0DER' ? 'USD' : 'JPY',
                             our_price: [
                                 {
                                     schedule: [
                                         {
-                                            value_with_tax: price
+                                            value_with_tax: numericPrice
                                         }
                                     ]
                                 }
-                            ]
+                            ],
+                            marketplace_id: marketplaceId
                         }
                     ],
                     fulfillment_availability: [
                         {
                             fulfillment_channel_code: "DEFAULT",
-                            quantity: quantity
+                            quantity: numericQuantity,
+                            lead_time_to_ship_max_days: numericHandlingTime,
+                            marketplace_id: marketplaceId
                         }
                     ]
                 }
             }
         });
+        
+        console.log(`SP-API Listing: Successfully sent PUT request for ASIN ${asin} with SKU ${sku}`);
+        
+        // --- Amazonからのレスポンスを解析 ---
+        if (result && result.issues && result.issues.length > 0) {
+            console.warn(`--- LISTING ISSUES FOR ${sku} ---`);
+            const errors = result.issues.filter(issue => issue.severity === 'ERROR');
+            
+            result.issues.forEach(issue => {
+                console.warn(`[${issue.severity}] ${issue.code}: ${issue.message}`);
+            });
+            console.warn(`----------------------------------`);
+
+            // エラー（ERROR）が含まれている、またはカタログ不備（90220など）がある場合は、
+            // 呼び出し側に情報を渡して削除判断を仰ぐ
+            const hasIncompleteIssue = result.issues.some(issue => issue.code === '90220' || issue.message.includes('required but missing'));
+            
+            if (errors.length > 0 || hasIncompleteIssue) {
+                return { 
+                    status: 'INCOMPLETE', 
+                    asin, 
+                    sku, 
+                    message: 'Amazonのカタログ情報が不足しているため、出品を継続できません。', 
+                    issues: result.issues 
+                };
+            }
+        }
+        
         return { status: 'SUCCESS', asin, sku, message: `ASIN ${asin} がSKU ${sku} で出品されました。`, apiResponse: result };
     } catch (error) {
-        console.error(`Error listing item ${asin} with SKU ${sku}:`, error.response ? JSON.stringify(error.response.data, null, 2) : error.message);
-        throw new Error(`出品処理中にエラーが発生しました: ${error.message}`);
+        console.error('--- SP-API ERROR DEBUG START ---');
+        if (error.response) {
+            console.error('Status:', error.response.status);
+            console.error('Data:', JSON.stringify(error.response.data, null, 2));
+        } else {
+            console.error('Error Message:', error.message);
+        }
+        console.error('--- SP-API ERROR DEBUG END ---');
+        
+        let errorMsg = error.message;
+        if (error.response && error.response.data) {
+            if (error.response.data.issues) {
+                 errorMsg = error.response.data.issues.map(i => `[${i.code}] ${i.message}`).join(' / ');
+            } else if (error.response.data.errors) {
+                 errorMsg = error.response.data.errors.map(e => e.message).join(' / ');
+            }
+        }
+        throw new Error(`出品処理中にエラーが発生しました: ${errorMsg}`);
     }
 }
 
@@ -326,13 +516,19 @@ async function deleteListingsItem(sku, marketplaceId, userId) {
     if (!sku || !marketplaceId) {
         throw new Error('出品削除に必要な情報が不足しています。');
     }
-    const spApiClient = await getSpApiClient(marketplaceId, userId);
+
+    const { client: spApiClient, sellingPartnerId } = await getSpApiClient(marketplaceId, userId);
+    if (!sellingPartnerId) {
+        throw new Error('セラーIDが取得できません。');
+    }
+
     try {
         const result = await spApiClient.callAPI({
             method: 'DELETE',
-            api_path: `/listings/2021-08-01/items/${sku}`,
+            // deleteListingsItem の api_path も修正
+            api_path: `/listings/2021-08-01/items/${sellingPartnerId}/${sku}`,
             query: {
-                marketplaceIds: marketplaceId,
+                marketplaceIds: [marketplaceId],
             }
         });
         return { status: 'SUCCESS', sku, message: `SKU ${sku} の出品が削除されました。`, apiResponse: result };
@@ -355,7 +551,7 @@ async function getCatalogItemsByAsins(asins, marketplaceId, userId, isCancelled 
     }
     console.log(`SP-API Catalog: Getting item details for ${asins.length} ASINs...`);
     
-    const spApiClient = await getSpApiClient(marketplaceId, userId);
+    const { client: spApiClient } = await getSpApiClient(marketplaceId, userId);
     
     try {
         const res = await spApiClient.callAPI({
@@ -364,18 +560,26 @@ async function getCatalogItemsByAsins(asins, marketplaceId, userId, isCancelled 
             query: {
                 marketplaceIds: marketplaceId,
                 identifiers: asins.join(','),
-                identifierType: 'ASIN',
-                includedData: 'summaries',
-                pageSize: 20, // Max 20
+                identifiersType: 'ASIN',
+                includedData: 'summaries,productTypes', 
+                pageSize: 20, 
             },
         });
 
         if (res.items && res.items.length > 0) {
-            return res.items.map(item => ({
-                asin: item.asin,
-                productName: item.summaries?.[0]?.itemName || 'N/A',
-                brand: item.summaries?.[0]?.brand || 'N/A',
-            }));
+            return res.items.map(item => {
+                // productTypes は [{ productType: '...', marketplaceId: '...' }] の形式
+                const pTypeObj = item.productTypes?.[0];
+                const pType = (pTypeObj && typeof pTypeObj === 'object') ? pTypeObj.productType : (pTypeObj || 'PRODUCT');
+                
+                console.log(`[Catalog] ASIN ${item.asin} resolved to ProductType: ${pType}`);
+                return {
+                    asin: item.asin,
+                    productName: item.summaries?.[0]?.itemName || 'N/A',
+                    brand: item.summaries?.[0]?.brand || 'N/A',
+                    productType: pType, 
+                };
+            });
         }
         return [];
     } catch (error) {
@@ -390,7 +594,7 @@ async function getProductAttributesForAsins(asins, marketplaceId, userId, isCanc
     }
     console.log(`SP-API Attributes: Getting attributes for ${asins.length} ASINs in ${marketplaceId}`);
     
-    const spApiClient = await getSpApiClient(marketplaceId, userId);
+    const { client: spApiClient } = await getSpApiClient(marketplaceId, userId);
     const allAttributes = {};
 
     const chunkSize = 20; 
@@ -402,16 +606,16 @@ async function getProductAttributesForAsins(asins, marketplaceId, userId, isCanc
         const chunk = asins.slice(i, i + chunkSize);
         
         try {
-            const res = await spApiClient.callAPI({
+            const res = await callApiWithRetries(spApiClient, {
                 method: 'GET',
                 api_path: '/catalog/2022-04-01/items',
                 query: {
                     marketplaceIds: marketplaceId,
                     identifiers: chunk.join(','),
-                    identifierType: 'ASIN',
+                    identifiersType: 'ASIN',
                     includedData: 'attributes,dimensions,relationships',
                 },
-            });
+            }, `SP-API Attributes (${marketplaceId}) chunk ${Math.floor(i / chunkSize) + 1}`);
 
             if (res.items && res.items.length > 0) {
                 for (const item of res.items) {
@@ -445,6 +649,10 @@ async function getProductAttributesForAsins(asins, marketplaceId, userId, isCanc
             }
         } catch (error) {
             console.error(`SP-API Attributes (${marketplaceId}) のチャンク処理中にエラーが発生しました:`, error);
+        }
+
+        if (i + chunkSize < asins.length) {
+            await sleep(1200);
         }
     }
     

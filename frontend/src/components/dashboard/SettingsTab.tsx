@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Typography, TextField, Button, Box, Alert, CircularProgress } from '@mui/material';
+import { Typography, TextField, Button, Box, Alert, CircularProgress, FormControlLabel, Switch } from '@mui/material';
 import api from '../../services/api';
 import { AppSettings, ProfitabilityTier, ShippingCostTier } from '../../types';
 import ProfitabilityTiersTable from './ProfitabilityTiersTable';
@@ -8,10 +8,18 @@ import ShippingCostTiersTable from './ShippingCostTiersTable';
 const SettingsTab: React.FC = () => {
   const [settings, setSettings] = useState<Partial<AppSettings>>({
     domesticShippingCostPerItem: 0,
+    internationalShippingFscRate: 0.204,
+    internationalShippingFixedFeeJpy: 220,
     customsDutyRate: 0,
     amazonFeeRate: 0.15,
     exchangeRateJpyToUsd: 0,
+    autoExchangeRateEnabled: true,
+    exchangeRateRefreshIntervalMinutes: 360,
+    exchangeRateUpdatedAt: null,
+    exchangeRateDate: null,
+    exchangeRateSource: null,
     inventoryThreshold: 1,
+    leadTimeBuffer: 3,
     excludedAsins: [],
     excludedBrands: [],
     excludedKeywords: [],
@@ -19,6 +27,7 @@ const SettingsTab: React.FC = () => {
     shippingCostTiers: []
   });
   const [loading, setLoading] = useState(true);
+  const [refreshingExchangeRate, setRefreshingExchangeRate] = useState(false);
   const [error, setError] = useState('');
   const [savedMessage, setSavedMessage] = useState('');
 
@@ -59,9 +68,29 @@ const SettingsTab: React.FC = () => {
 
   const handleSettingsChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     const { name, value } = e.target;
+    const numericFields = new Set([
+      'domesticShippingCostPerItem',
+      'internationalShippingFscRate',
+      'internationalShippingFixedFeeJpy',
+      'customsDutyRate',
+      'amazonFeeRate',
+      'exchangeRateJpyToUsd',
+      'exchangeRateRefreshIntervalMinutes',
+      'inventoryThreshold',
+      'leadTimeBuffer'
+    ]);
+
     setSettings(prev => ({
       ...prev,
-      [name]: name.includes('Rate') || name.includes('Cost') || name.includes('Threshold') ? parseFloat(value) || 0 : value
+      [name]: numericFields.has(name) ? parseFloat(value) || 0 : value
+    }));
+  };
+
+  const handleSwitchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const { name, checked } = e.target;
+    setSettings(prev => ({
+      ...prev,
+      [name]: checked
     }));
   };
 
@@ -92,6 +121,21 @@ const SettingsTab: React.FC = () => {
       setError(err.response?.data?.error || '設定の保存に失敗しました。');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleRefreshExchangeRate = async () => {
+    setRefreshingExchangeRate(true);
+    setError('');
+    setSavedMessage('');
+    try {
+      const response = await api.post('/settings/exchange-rate/refresh');
+      setSettings(response.data.settings);
+      setSavedMessage(response.data.message || '為替レートを更新しました。');
+    } catch (err: any) {
+      setError(err.response?.data?.error || '為替レートの更新に失敗しました。');
+    } finally {
+      setRefreshingExchangeRate(false);
     }
   };
 
@@ -135,11 +179,58 @@ const SettingsTab: React.FC = () => {
           
           <Box sx={{ display: 'flex', gap: 2 }}>
             <TextField label="国内送料 (1個あたり円)" name="domesticShippingCostPerItem" type="number" value={settings.domesticShippingCostPerItem} onChange={handleSettingsChange} fullWidth />
-            <TextField label="関税率 (例: 0.05)" name="customsDutyRate" type="number" value={settings.customsDutyRate} onChange={handleSettingsChange} fullWidth />
+            <TextField label="国際送料 FSC率 (例: 0.204)" name="internationalShippingFscRate" type="number" value={settings.internationalShippingFscRate} onChange={handleSettingsChange} fullWidth />
+            <TextField label="国際送料 固定加算 (円)" name="internationalShippingFixedFeeJpy" type="number" value={settings.internationalShippingFixedFeeJpy} onChange={handleSettingsChange} fullWidth />
+            <TextField label="関税率 (例: 0.05) ※立替手数料2%自動加算" name="customsDutyRate" type="number" value={settings.customsDutyRate} onChange={handleSettingsChange} fullWidth />
           </Box>
-          <Box sx={{ display: 'flex', gap: 2 }}>
-            <TextField label="為替レート (1ドルあたり円)" name="exchangeRateJpyToUsd" type="number" value={settings.exchangeRateJpyToUsd} onChange={handleSettingsChange} fullWidth />
+          <Box sx={{ display: 'flex', gap: 2, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+            <TextField
+              label="為替レート (1ドルあたり円)"
+              name="exchangeRateJpyToUsd"
+              type="number"
+              value={settings.exchangeRateJpyToUsd}
+              onChange={handleSettingsChange}
+              disabled={settings.autoExchangeRateEnabled}
+              sx={{ flex: '1 1 220px' }}
+            />
+            <TextField
+              label="為替自動更新間隔 (分)"
+              name="exchangeRateRefreshIntervalMinutes"
+              type="number"
+              value={settings.exchangeRateRefreshIntervalMinutes}
+              onChange={handleSettingsChange}
+              disabled={!settings.autoExchangeRateEnabled}
+              sx={{ flex: '1 1 180px' }}
+            />
+            <Box sx={{ flex: '1 1 260px' }}>
+              <FormControlLabel
+                control={
+                  <Switch
+                    name="autoExchangeRateEnabled"
+                    checked={Boolean(settings.autoExchangeRateEnabled)}
+                    onChange={handleSwitchChange}
+                  />
+                }
+                label="為替レートを自動取得"
+              />
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+                <Button
+                  variant="outlined"
+                  onClick={handleRefreshExchangeRate}
+                  disabled={refreshingExchangeRate}
+                  size="small"
+                >
+                  {refreshingExchangeRate ? <CircularProgress size={18} /> : '今すぐ取得'}
+                </Button>
+                <Typography variant="caption" color="text.secondary">
+                  {settings.exchangeRateUpdatedAt
+                    ? `${settings.exchangeRateSource || 'API'} ${settings.exchangeRateDate || ''} / ${new Date(settings.exchangeRateUpdatedAt).toLocaleString()}`
+                    : '未取得'}
+                </Typography>
+              </Box>
+            </Box>
             <TextField label="在庫取下閾値 (出品者数)" name="inventoryThreshold" type="number" value={settings.inventoryThreshold} onChange={handleSettingsChange} fullWidth />
+            <TextField label="リードタイムバッファ (n値)" name="leadTimeBuffer" type="number" value={settings.leadTimeBuffer} onChange={handleSettingsChange} fullWidth />
           </Box>
           
           <Box sx={{ p: 2, border: '1px solid #ccc', borderRadius: '4px' }}>

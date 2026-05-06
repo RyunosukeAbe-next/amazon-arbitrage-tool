@@ -32,12 +32,17 @@ function getUserAuthFilePath(userId) {
 async function loadUserAmazonAuth(userId) {
     const authFilePath = getUserAuthFilePath(userId);
     try {
-        const data = await fs.readFile(authFilePath, 'utf8');
+        let data = await fs.readFile(authFilePath, 'utf8');
+        // BOM (Byte Order Mark) が含まれている場合は削除する
+        if (data.charCodeAt(0) === 0xFEFF) {
+            data = data.slice(1);
+        }
         return JSON.parse(data);
     } catch (error) {
         if (error.code === 'ENOENT') {
             return null; // ファイルがなければ認証情報なし
         }
+        console.error(`[User ${userId}] Error loading amazon auth file:`, error);
         throw error;
     }
 }

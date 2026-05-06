@@ -17,6 +17,13 @@ function getListingsFilePath(userId) {
     return path.join(CONFIG_DIR, userId, 'listings.json');
 }
 
+function getSuspendedListingsFilePath(userId) {
+    if (!userId) {
+        throw new Error('ユーザーIDが必要です。');
+    }
+    return path.join(CONFIG_DIR, userId, 'suspended_listings.json');
+}
+
 /**
  * ユーザーの出品中リストを取得
  * @param {string} userId
@@ -54,6 +61,52 @@ async function saveTrackedListings(userId, listings) {
   }
 }
 
+async function loadSuspendedListings(userId) {
+  const suspendedFile = getSuspendedListingsFilePath(userId);
+  try {
+    const data = await fs.readFile(suspendedFile, 'utf8');
+    return JSON.parse(data);
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      return [];
+    }
+    console.error(`ユーザー(${userId})の停止中リスト読み込み中にエラーが発生しました:`, error);
+    throw error;
+  }
+}
+
+async function saveSuspendedListings(userId, listings) {
+  const suspendedFile = getSuspendedListingsFilePath(userId);
+  const userConfigDir = path.dirname(suspendedFile);
+  await fs.mkdir(userConfigDir, { recursive: true });
+  await fs.writeFile(suspendedFile, JSON.stringify(listings, null, 2), 'utf8');
+}
+
+async function addSuspendedListing(userId, listing, reasonType, reason) {
+  const suspendedListings = await loadSuspendedListings(userId);
+  const existingIndex = suspendedListings.findIndex(l => l.sku === listing.sku && l.marketplaceId === listing.marketplaceId);
+  const suspendedListing = {
+    ...listing,
+    suspendedReasonType: reasonType,
+    suspendedReason: reason,
+    suspendedAt: new Date().toISOString(),
+  };
+
+  if (existingIndex > -1) {
+    suspendedListings[existingIndex] = suspendedListing;
+  } else {
+    suspendedListings.push(suspendedListing);
+  }
+
+  await saveSuspendedListings(userId, suspendedListings);
+}
+
+async function removeSuspendedListing(userId, sku, marketplaceId) {
+  let suspendedListings = await loadSuspendedListings(userId);
+  suspendedListings = suspendedListings.filter(l => !(l.sku === sku && l.marketplaceId === marketplaceId));
+  await saveSuspendedListings(userId, suspendedListings);
+}
+
 /**
  * ユーザーの出品中リストにSKUを追加
  * @param {string} userId
@@ -61,12 +114,14 @@ async function saveTrackedListings(userId, listings) {
  * @param {string} asin 
  * @param {string} marketplaceId 
  * @param {number} quantity
+ * @param {number} price
+ * @param {string} productType
  */
-async function addTrackedListing(userId, sku, asin, marketplaceId, quantity, price) {
+async function addTrackedListing(userId, sku, asin, marketplaceId, quantity, price, productType = 'GENERIC') {
   const listings = await loadTrackedListings(userId);
   const existingIndex = listings.findIndex(l => l.sku === sku && l.marketplaceId === marketplaceId);
   
-  const listingData = { sku, asin, marketplaceId, quantity, price };
+  const listingData = { sku, asin, marketplaceId, quantity, price, productType };
 
   if (existingIndex > -1) {
     // 既存の場合は情報を更新
@@ -114,8 +169,12 @@ async function getAllTrackedListings(userId) {
 module.exports = {
   loadTrackedListings,
   saveTrackedListings, // saveTrackedListingsもエクスポートに追加
+  loadSuspendedListings,
+  saveSuspendedListings,
   addTrackedListing,
   removeTrackedListing,
+  addSuspendedListing,
+  removeSuspendedListing,
   getTrackedListingByAsin, // 追加
   getAllTrackedListings,    // 追加
 };
