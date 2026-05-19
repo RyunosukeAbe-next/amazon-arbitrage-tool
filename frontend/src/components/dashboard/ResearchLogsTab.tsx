@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   Typography, Box, Table, TableBody, TableCell, TableContainer,
-  TableHead, TableRow, Paper, Button, Modal, Alert, CircularProgress, Chip
+  TableHead, TableRow, Paper, Button, Modal, Alert, CircularProgress, Chip, TablePagination
 } from '@mui/material';
 import api from '../../services/api';
 import { Product, ResearchLog } from '../../types';
@@ -20,6 +20,7 @@ const ResearchLogsTab: React.FC<ResearchLogsTabProps> = ({ activeJobs, onCancelJ
   const [successMessage, setSuccessMessage] = useState('');
   const [researchLogs, setResearchLogs] = useState<ResearchLog[]>([]);
   const [selectedLogDetails, setSelectedLogDetails] = useState<Product[] | null>(null);
+  const [detailPagination, setDetailPagination] = useState({ logId: '', total: 0, limit: 100, offset: 0 });
   const [isLogDetailModalOpen, setIsLogDetailModalOpen] = useState(false);
   const [downloading, setDownloading] = useState<string | null>(null);
   const [deletingLogId, setDeletingLogId] = useState<string | null>(null);
@@ -66,19 +67,42 @@ const ResearchLogsTab: React.FC<ResearchLogsTabProps> = ({ activeJobs, onCancelJ
     }
   };
 
-  const handleShowLogDetails = async (logId: string) => {
+  const handleShowLogDetails = async (logId: string, offset = 0, limit = detailPagination.limit) => {
     setLoadingDetails(true);
     setError('');
     setSuccessMessage('');
     try {
-      const response = await api.get(`/research-logs/${logId}`);
-      setSelectedLogDetails(response.data);
+      const response = await api.get(`/research-logs/${logId}`, {
+        params: { limit, offset },
+      });
+      const payload = response.data;
+      if (Array.isArray(payload)) {
+        setSelectedLogDetails(payload);
+        setDetailPagination({ logId, total: payload.length, limit: payload.length || limit, offset: 0 });
+      } else {
+        setSelectedLogDetails(payload.items || []);
+        setDetailPagination({
+          logId,
+          total: payload.total || 0,
+          limit: payload.limit || limit,
+          offset: payload.offset || 0,
+        });
+      }
       setIsLogDetailModalOpen(true);
     } catch (err: any) {
       setError(err.response?.data?.error || 'ログ詳細の取得に失敗しました。');
     } finally {
       setLoadingDetails(false);
     }
+  };
+
+  const handleDetailPageChange = (_event: unknown, newPage: number) => {
+    handleShowLogDetails(detailPagination.logId, newPage * detailPagination.limit, detailPagination.limit);
+  };
+
+  const handleDetailRowsPerPageChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const nextLimit = parseInt(event.target.value, 10);
+    handleShowLogDetails(detailPagination.logId, 0, nextLimit);
   };
 
   const handleDownloadLogCsv = async (logId: string) => {
@@ -160,12 +184,12 @@ const ResearchLogsTab: React.FC<ResearchLogsTabProps> = ({ activeJobs, onCancelJ
           <TableBody>
             {activeJobs.map((job) => (
               <TableRow key={job.id} sx={{ backgroundColor: job.status === 'error' ? 'rgba(255, 0, 0, 0.05)' : 'inherit' }}>
-                <TableCell>{new Date(job.id.split('-')[0]).toLocaleString()}</TableCell>
+                <TableCell>{new Date(job.createdAt || job.id.split('-').slice(0, 3).join('-')).toLocaleString()}</TableCell>
                 <TableCell>{renderStatus(job.status)}</TableCell>
                 <TableCell>
                   {job.name}
-                  {job.status === 'error' && (
-                    <Typography variant="caption" color="error.main" display="block">
+                  {job.message && (
+                    <Typography variant="caption" color={job.status === 'error' ? 'error.main' : 'text.secondary'} display="block">
                       {job.message}
                     </Typography>
                   )}
@@ -249,6 +273,16 @@ const ResearchLogsTab: React.FC<ResearchLogsTabProps> = ({ activeJobs, onCancelJ
               </TableBody>
             </Table>
           </TableContainer>
+          <TablePagination
+            component="div"
+            count={detailPagination.total}
+            page={Math.floor(detailPagination.offset / Math.max(detailPagination.limit, 1))}
+            onPageChange={handleDetailPageChange}
+            rowsPerPage={detailPagination.limit}
+            onRowsPerPageChange={handleDetailRowsPerPageChange}
+            rowsPerPageOptions={[50, 100, 200, 500]}
+            labelRowsPerPage="表示件数"
+          />
           <Button onClick={() => setIsLogDetailModalOpen(false)} sx={{ mt: 2 }}>閉じる</Button>
         </Box>
       </Modal>

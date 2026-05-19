@@ -8,6 +8,9 @@ export interface Product {
   jpSellerCount?: number;
   profitJpy?: number;
   profitRate?: number;
+  internationalShippingCostJpy?: number;
+  shippingWeightGrams?: number | null;
+  isShippingWeightEstimated?: boolean;
   isExcluded?: boolean;
   productType?: string;
 }
@@ -38,6 +41,7 @@ export interface AppSettings {
   exchangeRateSource?: string | null;
   inventoryThreshold: number;
   leadTimeBuffer: number;
+  keepaSellerAsinLimit: number;
   excludedAsins: string[];
   excludedBrands: string[];
   excludedKeywords: string[];

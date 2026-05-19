@@ -20,6 +20,7 @@ const SettingsTab: React.FC = () => {
     exchangeRateSource: null,
     inventoryThreshold: 1,
     leadTimeBuffer: 3,
+    keepaSellerAsinLimit: 1000,
     excludedAsins: [],
     excludedBrands: [],
     excludedKeywords: [],
@@ -77,7 +78,8 @@ const SettingsTab: React.FC = () => {
       'exchangeRateJpyToUsd',
       'exchangeRateRefreshIntervalMinutes',
       'inventoryThreshold',
-      'leadTimeBuffer'
+      'leadTimeBuffer',
+      'keepaSellerAsinLimit'
     ]);
 
     setSettings(prev => ({
@@ -231,6 +233,7 @@ const SettingsTab: React.FC = () => {
             </Box>
             <TextField label="在庫取下閾値 (出品者数)" name="inventoryThreshold" type="number" value={settings.inventoryThreshold} onChange={handleSettingsChange} fullWidth />
             <TextField label="リードタイムバッファ (n値)" name="leadTimeBuffer" type="number" value={settings.leadTimeBuffer} onChange={handleSettingsChange} fullWidth />
+            <TextField label="Keepaセラー検索上限 (ASIN件数)" name="keepaSellerAsinLimit" type="number" value={settings.keepaSellerAsinLimit} onChange={handleSettingsChange} fullWidth />
           </Box>
           
           <Box sx={{ p: 2, border: '1px solid #ccc', borderRadius: '4px' }}>

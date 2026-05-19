@@ -1,5 +1,7 @@
 const fs = require('fs/promises');
 const path = require('path');
+const { readJsonFile, updateJsonFile, writeJsonFileAtomic } = require('./json-file-store');
+const { isDatabaseEnabled, query: dbQuery } = require('./database');
 
 // Renderの永続ディスクに対応するため、DATA_DIR環境変数を参照
 const DATA_DIR = process.env.DATA_DIR || path.resolve(__dirname, '../../');
@@ -26,15 +28,7 @@ function getMetaFilePath(userId) {
  */
 async function readAllLogs(userId) {
     const metaFile = getMetaFilePath(userId);
-    try {
-        const data = await fs.readFile(metaFile, 'utf8');
-        return JSON.parse(data);
-    } catch (error) {
-        if (error.code === 'ENOENT') {
-            return []; // ファイルがなければ空
-        }
-        throw error;
-    }
+    return readJsonFile(metaFile, []);
 }
 
 /**
@@ -42,8 +36,7 @@ async function readAllLogs(userId) {
  */
 async function writeAllLogs(userId, logs) {
     const metaFile = getMetaFilePath(userId);
-    await fs.mkdir(path.dirname(metaFile), { recursive: true });
-    await fs.writeFile(metaFile, JSON.stringify(logs, null, 2), 'utf8');
+    await writeJsonFileAtomic(metaFile, logs);
 }
 
 
@@ -51,6 +44,26 @@ async function writeAllLogs(userId, logs) {
  * 出品ログのメタデータを取得
  */
 async function getListingLogs(userId) {
+    if (isDatabaseEnabled()) {
+        const result = await dbQuery(
+            `SELECT
+                id,
+                title,
+                status,
+                total_asin_count AS "totalAsinCount",
+                listed_product_count AS "listedProductCount",
+                created_at AS "createdAt",
+                updated_at AS "updatedAt",
+                summary,
+                meta
+             FROM listing_logs
+             WHERE user_id = $1
+             ORDER BY created_at DESC`,
+            [userId]
+        );
+        return result.rows.map(({ meta, ...row }) => ({ ...(meta || {}), ...row }));
+    }
+
     const logs = await readAllLogs(userId);
     // 新しい順にソートして返す
     return logs.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
@@ -61,10 +74,18 @@ async function getListingLogs(userId) {
  */
 async function getListingLogDetails(userId, logId) {
     if (!logId) throw new Error('ログIDが必要です。');
+
+    if (isDatabaseEnabled()) {
+        const result = await dbQuery(
+            'SELECT details FROM listing_logs WHERE user_id = $1 AND id = $2',
+            [userId, logId]
+        );
+        return result.rows[0]?.details || null;
+    }
+
     const logFile = path.join(getLogsDir(userId), `${logId}.json`);
     try {
-        const data = await fs.readFile(logFile, 'utf8');
-        return JSON.parse(data);
+        return await readJsonFile(logFile);
     } catch (error) {
         if (error.code === 'ENOENT') {
             return null; // ログが見つからない
@@ -89,9 +110,28 @@ async function createListingLog(userId, title, totalAsinCount) {
         summary: '出品処理を開始しました...',
     };
 
-    const logs = await readAllLogs(userId);
-    logs.unshift(newLogMeta);
-    await writeAllLogs(userId, logs);
+    if (isDatabaseEnabled()) {
+        await dbQuery(
+            `INSERT INTO listing_logs (
+                user_id, id, title, status, total_asin_count, listed_product_count, created_at, summary, meta
+             )
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+            [
+                userId,
+                newLogMeta.id,
+                newLogMeta.title,
+                newLogMeta.status,
+                newLogMeta.totalAsinCount,
+                newLogMeta.listedProductCount,
+                newLogMeta.createdAt,
+                newLogMeta.summary,
+                newLogMeta
+            ]
+        );
+        return newLogMeta;
+    }
+
+    await updateJsonFile(getMetaFilePath(userId), [], logs => [newLogMeta, ...logs]);
 
     return newLogMeta;
 }
@@ -103,27 +143,90 @@ async function createListingLog(userId, title, totalAsinCount) {
  * @returns {Promise<object>} 更新されたログのメタデータ
  */
 async function updateListingLog(userId, logId, updates) {
-    const logs = await readAllLogs(userId);
-    const logIndex = logs.findIndex(log => log.id === logId);
+    let updatedLog;
 
-    if (logIndex === -1) {
-        throw new Error(`ログIDが見つかりません: ${logId}`);
+    if (isDatabaseEnabled()) {
+        const current = await dbQuery(
+            'SELECT * FROM listing_logs WHERE user_id = $1 AND id = $2',
+            [userId, logId]
+        );
+        const currentLog = current.rows[0];
+        if (!currentLog) {
+            throw new Error(`ログIDが見つかりません: ${logId}`);
+        }
+
+        const mergedLog = {
+            ...(currentLog.meta || {}),
+            id: currentLog.id,
+            title: currentLog.title,
+            status: currentLog.status,
+            totalAsinCount: currentLog.total_asin_count,
+            listedProductCount: currentLog.listed_product_count,
+            createdAt: currentLog.created_at,
+            updatedAt: currentLog.updated_at,
+            summary: currentLog.summary,
+            ...updates,
+            updatedAt: new Date().toISOString(),
+        };
+        delete mergedLog.details;
+
+        const result = await dbQuery(
+            `UPDATE listing_logs
+             SET title = $3,
+                 status = $4,
+                 total_asin_count = $5,
+                 listed_product_count = $6,
+                 summary = $7,
+                 updated_at = $8,
+                 meta = $9,
+                 details = COALESCE($10::jsonb, details)
+             WHERE user_id = $1 AND id = $2
+             RETURNING
+                id,
+                title,
+                status,
+                total_asin_count AS "totalAsinCount",
+                listed_product_count AS "listedProductCount",
+                created_at AS "createdAt",
+                updated_at AS "updatedAt",
+                summary`,
+            [
+                userId,
+                logId,
+                mergedLog.title,
+                mergedLog.status,
+                mergedLog.totalAsinCount,
+                mergedLog.listedProductCount,
+                mergedLog.summary,
+                mergedLog.updatedAt,
+                mergedLog,
+                updates.details || null
+            ]
+        );
+        return result.rows[0];
     }
 
-    // メタデータを更新
-    logs[logIndex] = { ...logs[logIndex], ...updates, updatedAt: new Date().toISOString() };
+    await updateJsonFile(getMetaFilePath(userId), [], async logs => {
+        const logIndex = logs.findIndex(log => log.id === logId);
 
-    // 'details' は大きなデータになる可能性があるため、別ファイルに保存
-    if (updates.details) {
-        const logsDir = getLogsDir(userId);
-        const logDetailFile = path.join(logsDir, `${logId}.json`);
-        await fs.writeFile(logDetailFile, JSON.stringify(updates.details, null, 2), 'utf8');
-        // メタデータからは削除
-        delete logs[logIndex].details;
-    }
+        if (logIndex === -1) {
+            throw new Error(`ログIDが見つかりません: ${logId}`);
+        }
 
-    await writeAllLogs(userId, logs);
-    return logs[logIndex];
+        logs[logIndex] = { ...logs[logIndex], ...updates, updatedAt: new Date().toISOString() };
+
+        // 'details' は大きなデータになる可能性があるため、別ファイルに保存
+        if (updates.details) {
+            await writeJsonFileAtomic(path.join(getLogsDir(userId), `${logId}.json`), updates.details);
+            // メタデータからは削除
+            delete logs[logIndex].details;
+        }
+
+        updatedLog = logs[logIndex];
+        return logs;
+    });
+
+    return updatedLog;
 }
 
 /**
@@ -133,21 +236,37 @@ async function updateListingLog(userId, logId, updates) {
  * @returns {Promise<boolean>}
  */
 async function deleteListingLog(userId, logId) {
-    const logs = await readAllLogs(userId);
-    const logToDelete = logs.find(log => log.id === logId);
-
-    if (!logToDelete) {
-        throw new Error(`削除対象のログIDが見つかりません: ${logId}`);
+    if (isDatabaseEnabled()) {
+        const current = await dbQuery(
+            'SELECT status FROM listing_logs WHERE user_id = $1 AND id = $2',
+            [userId, logId]
+        );
+        const logToDelete = current.rows[0];
+        if (!logToDelete) {
+            throw new Error(`削除対象のログIDが見つかりません: ${logId}`);
+        }
+        if (logToDelete.status === 'completed') {
+            throw new Error('完了したログは削除できません。');
+        }
+        await dbQuery('DELETE FROM listing_logs WHERE user_id = $1 AND id = $2', [userId, logId]);
+        return true;
     }
 
-    // ステータスが 'completed' のログは削除させない
-    if (logToDelete.status === 'completed') {
-        throw new Error('完了したログは削除できません。');
-    }
+    await updateJsonFile(getMetaFilePath(userId), [], logs => {
+        const logToDelete = logs.find(log => log.id === logId);
 
-    // メタデータから削除
-    const updatedLogs = logs.filter(log => log.id !== logId);
-    await writeAllLogs(userId, updatedLogs);
+        if (!logToDelete) {
+            throw new Error(`削除対象のログIDが見つかりません: ${logId}`);
+        }
+
+        // ステータスが 'completed' のログは削除させない
+        if (logToDelete.status === 'completed') {
+            throw new Error('完了したログは削除できません。');
+        }
+
+        // メタデータから削除
+        return logs.filter(log => log.id !== logId);
+    });
 
     // 詳細ログファイルも削除
     const logDetailFile = path.join(getLogsDir(userId), `${logId}.json`);

@@ -1,7 +1,6 @@
 console.log("--- Server script started ---");
 // .envファイルから環境変数を読み込む
 const path = require('path');
-const fs = require('fs/promises');
 require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
 
 const express = require('express');
@@ -24,6 +23,8 @@ const userManager = require('./services/user-manager');
 const listingManager = require('./services/listing-manager'); 
 const authenticate = require('./middleware/authenticate');
 const amazonAuthService = require('./services/amazon-auth-service'); 
+const { initDatabase } = require('./services/database');
+const searchJobManager = require('./services/search-job-manager');
 
 const app = express();
 const port = process.env.PORT || 3001;
@@ -95,12 +96,14 @@ authRouter.post('/amazon/save-auth', async (req, res) => {
     try {
         const user = jwt.verify(token, process.env.JWT_SECRET);
         const userId = user.userId;
-        const { code, spapi_oauth_code, selling_partner_id } = req.body;
+        const { code, spapi_oauth_code, state, selling_partner_id } = req.body;
         const authCode = code || spapi_oauth_code;
 
         if (!authCode) {
             return res.status(400).json({ error: '認証コードがありません。' });
         }
+
+        await amazonAuthService.verifyAndConsumeUserOAuthState(userId, state);
 
         console.log(`[User ${userId}] Exchanging Amazon authorization code for tokens (via save-auth).`);
         const tokens = await amazonAuthService.exchangeCodeForTokens(authCode);
@@ -151,9 +154,9 @@ app.get('/api/amazon/callback', async (req, res) => {
 const apiRouter = express.Router();
 apiRouter.use(authenticate);
 
-apiRouter.get('/amazon/authorize', (req, res) => {
+apiRouter.get('/amazon/authorize', async (req, res) => {
     try {
-        const state = Math.random().toString(36).substring(2, 15);
+        const state = await amazonAuthService.createUserOAuthState(req.user.userId);
         console.log(`[User ${req.user.userId}] Generating Amazon Authorization URL with state: ${state}`);
         const authUrl = amazonAuthService.getAuthorizationUrl(state);
         res.json({ authorizationUrl: authUrl, state: state });
@@ -184,106 +187,145 @@ apiRouter.get('/amazon/auth-status', async (req, res) => {
 apiRouter.delete('/amazon/disconnect', async (req, res) => {
     const userId = req.user.userId;
     try {
-        const authFilePath = amazonAuthService.getUserAuthFilePath(userId);
-        await fs.unlink(authFilePath); 
-        res.json({ message: 'Amazonアカウントとの連携を解除しました。' });
-    } catch (error) {
-        if (error.code === 'ENOENT') {
+        const deleted = await amazonAuthService.deleteUserAmazonAuth(userId);
+        if (!deleted) {
             return res.status(404).json({ error: '連携済みのAmazonアカウントが見つかりません。' });
         }
+        res.json({ message: 'Amazonアカウントとの連携を解除しました。' });
+    } catch (error) {
         console.error(`[User ${userId}] Amazonアカウント連携解除中にエラー:`, error);
         res.status(500).json({ error: 'Amazonアカウント連携の解除に失敗しました。' });
     }
 });
 
-apiRouter.get('/search', async (req, res) => {
-  const { searchType, query, classificationId } = req.query;
-  const userId = req.user.userId;
-
-  let isCancelled = false;
-  // 意図しない切断でリサーチが強制終了されるのを防ぐため、キャンセル処理をコメントアウト
-  // req.on('close', () => {
-  //   isCancelled = true;
-  //   console.log(`[Request cancelled] User: ${userId}, Search: ${searchType}`);
-  // });
+async function runProductSearch(userId, params, options = {}) {
+  const { searchType, query, classificationId } = params;
+  const isCancelled = options.isCancelled || (() => false);
+  const updateProgress = options.updateProgress || (() => {});
 
   if (!searchType || !query) {
+    throw new Error('検索タイプとクエリは必須です。');
+  }
+
+  const settings = await loadSettings(userId);
+  let spApiProducts = [];
+  let asins = [];
+
+  updateProgress('検索条件を処理しています。');
+
+  if (searchType === 'keyword') {
+    const keywords = Array.isArray(query) ? query : String(query).split(',');
+    spApiProducts = await searchProductsByKeywords(keywords, US_MARKETPLACE_ID, userId, classificationId, isCancelled);
+    if (spApiProducts.length > 0) {
+      asins = spApiProducts.map(p => p.asin);
+    }
+  } else if (searchType === 'seller') {
+    const sellerId = String(query);
+    asins = await getASINsBySellerId(sellerId, 'com', settings.keepaSellerAsinLimit);
+    if (isCancelled()) throw new Error('検索がキャンセルされました。');
+    if (asins.length > 0) {
+      updateProgress(`${asins.length}件のASINの商品情報を取得しています。`);
+      spApiProducts = await getCatalogItemsByAsins(asins, US_MARKETPLACE_ID, userId, isCancelled);
+    }
+  } else if (searchType === 'asin') {
+    asins = Array.isArray(query) ? query : String(query).split(/[\s,]+/);
+    if (asins.length > 0) {
+      updateProgress(`${asins.length}件のASINの商品情報を取得しています。`);
+      spApiProducts = await getCatalogItemsByAsins(asins, US_MARKETPLACE_ID, userId, isCancelled);
+    }
+  } else {
+    throw new Error('無効な検索タイプです。');
+  }
+
+  if (isCancelled()) throw new Error('検索がキャンセルされました。');
+
+  let finalResults = [];
+  if (spApiProducts.length > 0) {
+    const pricingAsins = spApiProducts.map(product => product.asin);
+    updateProgress(`${pricingAsins.length}件の価格・属性情報を取得しています。`);
+    const [usPricing, jpPricing, attributes] = await Promise.all([
+      getCompetitivePricingForAsins(pricingAsins, US_MARKETPLACE_ID, userId, isCancelled),
+      getCompetitivePricingForAsins(pricingAsins, JP_MARKETPLACE_ID, userId, isCancelled),
+      getProductAttributesForAsins(pricingAsins, US_MARKETPLACE_ID, userId, isCancelled)
+    ]);
+
+    if (isCancelled()) throw new Error('検索がキャンセルされました。');
+
+    finalResults = spApiProducts.map(product => {
+      const productAsin = String(product.asin).trim().toUpperCase();
+      const usPriceInfo = usPricing[productAsin] || { price: 0, sellerCount: 0 };
+      const jpPriceInfo = jpPricing[productAsin] || { price: 0, sellerCount: 0 };
+      const productAttributes = attributes[productAsin] || {
+        weight: null,
+        volume: null,
+        category: 'N/A',
+        hasVariations: false,
+      };
+
+      const combinedProduct = { 
+        ...product,
+        asin: productAsin,
+        usPrice: usPriceInfo.price, 
+        jpPrice: jpPriceInfo.price, 
+        usSellerCount: usPriceInfo.sellerCount,
+        jpSellerCount: jpPriceInfo.sellerCount, // 日本の出品者数を追加
+        ...productAttributes 
+      };
+      const profitResult = calculateProfit(combinedProduct, settings);
+      const exclusionInfo = isExcluded(combinedProduct, settings, profitResult);
+      return { ...combinedProduct, ...profitResult, isExcluded: exclusionInfo.excluded, exclusionReason: exclusionInfo.reason };
+    });
+  }
+
+  if (isCancelled()) throw new Error('検索がキャンセルされました。');
+
+  updateProgress('リサーチログを保存しています。');
+  const logMeta = await researchLogger.saveResearchLog(userId, { searchType, query, classificationId: classificationId || null }, finalResults);
+  return { message: `${logMeta.resultCount}件の商品が見つかりました。ログに保存しました。`, log: logMeta, products: finalResults };
+}
+
+apiRouter.get('/search', async (req, res) => {
+  const userId = req.user.userId;
+  try {
+    const result = await runProductSearch(userId, req.query);
+    res.json(result);
+  } catch (error) {
+    const isBadRequest = ['検索タイプとクエリは必須です。', '無効な検索タイプです。'].includes(error.message);
+    if (!isBadRequest) {
+      console.error('リサーチ処理中にエラーが発生しました:', error);
+    }
+    res.status(isBadRequest ? 400 : 500).json({ error: error.message || 'サーバー内部でエラーが発生しました。' });
+  }
+});
+
+apiRouter.post('/search-jobs', async (req, res) => {
+  const userId = req.user.userId;
+  const params = req.body || {};
+  if (!params.searchType || !params.query) {
     return res.status(400).json({ error: '検索タイプとクエリは必須です。' });
   }
 
-  try {
-    const settings = await loadSettings(userId);
-    let spApiProducts = [];
-    let asins = [];
+  const name = params.name || `${params.searchType}: ${Array.isArray(params.query) ? params.query.join(', ') : params.query}`;
+  const job = searchJobManager.createSearchJob(userId, name, params, ({ isCancelled, update }) => (
+    runProductSearch(userId, params, { isCancelled, updateProgress: update })
+  ));
+  res.status(202).json({ job });
+});
 
-    if (searchType === 'keyword') {
-      spApiProducts = await searchProductsByKeywords(query.split(','), US_MARKETPLACE_ID, userId, classificationId, () => isCancelled);
-      if (spApiProducts.length > 0) {
-        asins = spApiProducts.map(p => p.asin);
-      }
-    } else if (searchType === 'seller') {
-      const sellerId = query;
-      asins = await getASINsBySellerId(sellerId, 'com'); 
-      if (isCancelled) return;
-      if (asins.length > 0) {
-        spApiProducts = await getCatalogItemsByAsins(asins, US_MARKETPLACE_ID, userId, () => isCancelled);
-      }
-    } else if (searchType === 'asin') {
-      asins = Array.isArray(query) ? query : query.split(/[\s,]+/);
-      if (asins.length > 0) {
-        spApiProducts = await getCatalogItemsByAsins(asins, US_MARKETPLACE_ID, userId, () => isCancelled);
-      }
-    } else {
-      return res.status(400).json({ error: '無効な検索タイプです。' });
-    }
-
-    if (isCancelled) return;
-
-    let finalResults = [];
-    if (spApiProducts.length > 0) {
-      const [usPricing, jpPricing, attributes] = await Promise.all([
-        getCompetitivePricingForAsins(asins, US_MARKETPLACE_ID, userId, () => isCancelled),
-        getCompetitivePricingForAsins(asins, JP_MARKETPLACE_ID, userId, () => isCancelled),
-        getProductAttributesForAsins(asins, US_MARKETPLACE_ID, userId, () => isCancelled)
-      ]);
-
-      if (isCancelled) return;
-
-      finalResults = spApiProducts.map(product => {
-        const usPriceInfo = usPricing[product.asin] || { price: 0, sellerCount: 0 };
-        const jpPriceInfo = jpPricing[product.asin] || { price: 0, sellerCount: 0 };
-        const productAttributes = attributes[product.asin] || {
-          weight: null,
-          volume: null,
-          category: 'N/A',
-          hasVariations: false,
-        };
-
-        const combinedProduct = { 
-          ...product, 
-          usPrice: usPriceInfo.price, 
-          jpPrice: jpPriceInfo.price, 
-          usSellerCount: usPriceInfo.sellerCount,
-          jpSellerCount: jpPriceInfo.sellerCount, // 日本の出品者数を追加
-          ...productAttributes 
-        };
-        const profitResult = calculateProfit(combinedProduct, settings);
-        const exclusionInfo = isExcluded(combinedProduct, settings, profitResult);
-        return { ...combinedProduct, ...profitResult, isExcluded: exclusionInfo.excluded, exclusionReason: exclusionInfo.reason };
-      });
-    }
-
-    if (isCancelled) return;
-
-    const logMeta = await researchLogger.saveResearchLog(userId, { searchType, query, classificationId: classificationId || null }, finalResults);
-    res.json({ message: `${logMeta.resultCount}件の商品が見つかりました。ログに保存しました。`, log: logMeta, products: finalResults });
-
-  } catch (error) {
-    if (!isCancelled) {
-      console.error('リサーチ処理中にエラーが発生しました:', error);
-      res.status(500).json({ error: error.message || 'サーバー内部でエラーが発生しました。' });
-    }
+apiRouter.get('/search-jobs/:jobId', async (req, res) => {
+  const job = searchJobManager.getSearchJob(req.user.userId, req.params.jobId);
+  if (!job) {
+    return res.status(404).json({ error: '検索ジョブが見つかりません。' });
   }
+  res.json({ job });
+});
+
+apiRouter.delete('/search-jobs/:jobId', async (req, res) => {
+  const job = searchJobManager.cancelSearchJob(req.user.userId, req.params.jobId);
+  if (!job) {
+    return res.status(404).json({ error: '検索ジョブが見つかりません。' });
+  }
+  res.json({ job });
 });
 
 apiRouter.get('/settings', async (req, res) => {
@@ -344,6 +386,8 @@ apiRouter.post('/download-csv', async (req, res) => {
             { field: 'totalCostJpy', title: '総コスト (JPY)' },
             { field: 'procurementCostJpy', title: '仕入れ価格 (JPY)' },
             { field: 'internationalShippingCostJpy', title: '国際送料 (JPY)' },
+            { field: 'shippingWeightGrams', title: '送料計算重量 (g)' },
+            { field: 'isShippingWeightEstimated', title: '送料重量推定' },
             { field: 'customsDutyJpy', title: '関税 (JPY)' },
             { field: 'amazonFeeJpy', title: 'Amazon手数料 (JPY)' },
             { field: 'isExcluded', title: '除外対象' },
@@ -426,17 +470,29 @@ apiRouter.post('/bulk-listing-from-asins', async (req, res) => {
     try {
         logMeta = await listingLogger.createListingLog(userId, title || '一括出品', asins.length);
         const settings = await loadSettings(userId);
+        await listingLogger.updateListingLog(userId, logMeta.id, {
+            processedAsinCount: 0,
+            summary: '商品情報を取得しています...'
+        });
         const allProducts = await getCatalogItemsByAsins(asins, US_MARKETPLACE_ID, userId, () => isCancelled);
         const pricingAsins = allProducts.map(p => p.asin);
-        const [usPricing, jpPricing] = await Promise.all([
+        await listingLogger.updateListingLog(userId, logMeta.id, {
+            processedAsinCount: 0,
+            resolvedAsinCount: pricingAsins.length,
+            summary: `${pricingAsins.length}件の商品情報を取得しました。価格と属性を取得しています...`
+        });
+        const [usPricing, jpPricing, attributes] = await Promise.all([
             getCompetitivePricingForAsins(pricingAsins, US_MARKETPLACE_ID, userId, () => isCancelled),
-            getCompetitivePricingForAsins(pricingAsins, JP_MARKETPLACE_ID, userId, () => isCancelled)
+            getCompetitivePricingForAsins(pricingAsins, JP_MARKETPLACE_ID, userId, () => isCancelled),
+            getProductAttributesForAsins(pricingAsins, US_MARKETPLACE_ID, userId, () => isCancelled)
         ]);
 
         let listedCount = 0;
+        let processedCount = 0;
         const detailLogs = [];
         for (const product of allProducts) {
             if (isCancelled) break;
+            processedCount++;
             const existingListing = await listingManager.getTrackedListingByAsin(userId, product.asin);
             if (existingListing) {
                 detailLogs.push({
@@ -445,6 +501,14 @@ apiRouter.post('/bulk-listing-from-asins', async (req, res) => {
                     status: 'skipped',
                     reason: '既に出品管理中のASINです。'
                 });
+                if (processedCount % 5 === 0 || processedCount === allProducts.length) {
+                    await listingLogger.updateListingLog(userId, logMeta.id, {
+                        processedAsinCount: processedCount,
+                        listedProductCount: listedCount,
+                        currentAsin: product.asin,
+                        summary: `${processedCount}/${allProducts.length}件を処理しました。`
+                    });
+                }
                 continue;
             }
 
@@ -452,14 +516,36 @@ apiRouter.post('/bulk-listing-from-asins', async (req, res) => {
             const jpPriceInfo = jpPricing[product.asin];
             if (!usPriceInfo || !jpPriceInfo) {
                 detailLogs.push({ asin: product.asin, status: 'skipped', reason: '価格不足' });
+                if (processedCount % 5 === 0 || processedCount === allProducts.length) {
+                    await listingLogger.updateListingLog(userId, logMeta.id, {
+                        processedAsinCount: processedCount,
+                        listedProductCount: listedCount,
+                        currentAsin: product.asin,
+                        summary: `${processedCount}/${allProducts.length}件を処理しました。`
+                    });
+                }
                 continue;
             }
-            const combinedProduct = { ...product, usPrice: usPriceInfo.price, jpPrice: jpPriceInfo.price };
+            const productAttributes = attributes[product.asin] || {};
+            const combinedProduct = {
+                ...product,
+                ...productAttributes,
+                usPrice: usPriceInfo.price,
+                jpPrice: jpPriceInfo.price
+            };
             const profitResult = calculateProfit(combinedProduct, settings);
             const exclusionInfo = isExcluded(combinedProduct, settings, profitResult);
 
             if (exclusionInfo.excluded) {
                 detailLogs.push({ asin: product.asin, status: 'skipped', reason: exclusionInfo.reason });
+                if (processedCount % 5 === 0 || processedCount === allProducts.length) {
+                    await listingLogger.updateListingLog(userId, logMeta.id, {
+                        processedAsinCount: processedCount,
+                        listedProductCount: listedCount,
+                        currentAsin: product.asin,
+                        summary: `${processedCount}/${allProducts.length}件を処理しました。`
+                    });
+                }
                 continue;
             }
             let skuToUse = `AUTO-${Date.now()}-${product.asin}`;
@@ -478,10 +564,20 @@ apiRouter.post('/bulk-listing-from-asins', async (req, res) => {
             } catch(e) {
                 detailLogs.push({ asin: product.asin, status: 'error', reason: e.message });
             }
+            if (processedCount % 5 === 0 || processedCount === allProducts.length) {
+                await listingLogger.updateListingLog(userId, logMeta.id, {
+                    processedAsinCount: processedCount,
+                    listedProductCount: listedCount,
+                    currentAsin: product.asin,
+                    summary: `${processedCount}/${allProducts.length}件を処理しました。`
+                });
+            }
         }
         await listingLogger.updateListingLog(userId, logMeta.id, {
             status: isCancelled ? 'cancelled' : 'completed',
+            processedAsinCount: processedCount,
             listedProductCount: listedCount,
+            summary: isCancelled ? `${processedCount}/${allProducts.length}件でキャンセルされました。` : `${processedCount}/${allProducts.length}件を処理し、${listedCount}件を出品しました。`,
             details: detailLogs
         });
     } catch (error) {
@@ -498,6 +594,17 @@ apiRouter.get('/listing-logs', async (req, res) => {
     }
 });
 
+apiRouter.delete('/listing-logs/:logId', async (req, res) => {
+    try {
+        await listingLogger.deleteListingLog(req.user.userId, req.params.logId);
+        res.json({ message: '出品ログを削除しました。' });
+    } catch (error) {
+        const isNotFound = error.message && error.message.includes('見つかりません');
+        const statusCode = isNotFound ? 404 : 400;
+        res.status(statusCode).json({ error: error.message || '出品ログの削除に失敗しました。' });
+    }
+});
+
 apiRouter.get('/research-logs', async (req, res) => {
     try {
         const logs = await researchLogger.getResearchLogs(req.user.userId);
@@ -509,7 +616,12 @@ apiRouter.get('/research-logs', async (req, res) => {
 
 apiRouter.get('/research-logs/:logId', async (req, res) => {
     try {
-        const details = await researchLogger.getResearchLogDetails(req.user.userId, req.params.logId);
+        const { limit, offset } = req.query;
+        const options = limit !== undefined || offset !== undefined ? { limit, offset } : {};
+        const details = await researchLogger.getResearchLogDetails(req.user.userId, req.params.logId, options);
+        if (!details) {
+            return res.status(404).json({ error: 'リサーチログが見つかりません。' });
+        }
         res.json(details);
     } catch (error) {
         res.status(500).json({ error: 'エラー' });
@@ -530,8 +642,19 @@ apiRouter.delete('/research-logs/:logId', async (req, res) => {
 });
 
 app.use('/api', apiRouter);
-app.listen(port, () => {
-  console.log(`Server is running on http://localhost:${port}`);
-  startInventoryWatcher();
-  startPriceAdjuster();
-});
+
+async function startServer() {
+  try {
+    await initDatabase();
+    app.listen(port, () => {
+      console.log(`Server is running on http://localhost:${port}`);
+      startInventoryWatcher();
+      startPriceAdjuster();
+    });
+  } catch (error) {
+    console.error('サーバー起動前の初期化に失敗しました:', error);
+    process.exit(1);
+  }
+}
+
+startServer();

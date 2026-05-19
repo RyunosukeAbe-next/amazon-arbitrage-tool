@@ -1,6 +1,7 @@
-const fs = require('fs/promises');
 const path = require('path');
 const bcrypt = require('bcrypt');
+const { readJsonFile, updateJsonFile, writeJsonFileAtomic } = require('./json-file-store');
+const { isDatabaseEnabled, query } = require('./database');
 
 const DATA_DIR = process.env.DATA_DIR || path.resolve(__dirname, '../../');
 const CONFIG_DIR = path.join(DATA_DIR, 'config');
@@ -11,15 +12,14 @@ const USERS_FILE = path.join(CONFIG_DIR, 'users.json');
  * @returns {Promise<object[]>}
  */
 async function loadUsers() {
-  try {
-    const data = await fs.readFile(USERS_FILE, 'utf8');
-    return JSON.parse(data);
-  } catch (error) {
-    if (error.code === 'ENOENT') {
-      return []; // ファイルがなければ空配列
-    }
-    throw error;
+  if (isDatabaseEnabled()) {
+    const result = await query(
+      'SELECT id, username, password_hash AS password FROM app_users ORDER BY created_at ASC'
+    );
+    return result.rows;
   }
+
+  return readJsonFile(USERS_FILE, []);
 }
 
 /**
@@ -27,7 +27,21 @@ async function loadUsers() {
  * @param {object[]} users 
  */
 async function saveUsers(users) {
-  await fs.writeFile(USERS_FILE, JSON.stringify(users, null, 2), 'utf8');
+  if (isDatabaseEnabled()) {
+    for (const user of users) {
+      await query(
+        `INSERT INTO app_users (id, username, password_hash)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (id) DO UPDATE SET
+           username = EXCLUDED.username,
+           password_hash = EXCLUDED.password_hash`,
+        [user.id, user.username, user.password]
+      );
+    }
+    return;
+  }
+
+  await writeJsonFileAtomic(USERS_FILE, users);
 }
 
 /**
@@ -48,6 +62,14 @@ async function getAllUsers() {
  * @returns {Promise<object|undefined>}
  */
 async function findUserByUsername(username) {
+  if (isDatabaseEnabled()) {
+    const result = await query(
+      'SELECT id, username, password_hash AS password FROM app_users WHERE username = $1 LIMIT 1',
+      [username]
+    );
+    return result.rows[0];
+  }
+
   const users = await loadUsers();
   return users.find(user => user.username === username);
 }
@@ -59,24 +81,48 @@ async function findUserByUsername(username) {
  * @returns {Promise<object>}
  */
 async function addUser(username, password) {
-  const users = await loadUsers();
-  const existingUser = users.find(user => user.username === username);
-  if (existingUser) {
-    throw new Error('このユーザー名は既に使用されています。');
-  }
-
   // パスワードをハッシュ化
   const saltRounds = 10;
   const hashedPassword = await bcrypt.hash(password, saltRounds);
+  let newUser;
 
-  const newUser = {
-    id: `user_${Date.now()}`, // シンプルなユニークID
-    username,
-    password: hashedPassword,
-  };
+  if (isDatabaseEnabled()) {
+    newUser = {
+      id: `user_${Date.now()}`,
+      username,
+      password: hashedPassword,
+    };
 
-  users.push(newUser);
-  await saveUsers(users);
+    try {
+      await query(
+        'INSERT INTO app_users (id, username, password_hash) VALUES ($1, $2, $3)',
+        [newUser.id, newUser.username, newUser.password]
+      );
+    } catch (error) {
+      if (error.code === '23505') {
+        throw new Error('このユーザー名は既に使用されています。');
+      }
+      throw error;
+    }
+
+    const { password: _, ...userToReturn } = newUser;
+    return userToReturn;
+  }
+
+  await updateJsonFile(USERS_FILE, [], users => {
+    const existingUser = users.find(user => user.username === username);
+    if (existingUser) {
+      throw new Error('このユーザー名は既に使用されています。');
+    }
+
+    newUser = {
+      id: `user_${Date.now()}`, // シンプルなユニークID
+      username,
+      password: hashedPassword,
+    };
+
+    return [...users, newUser];
+  });
 
   // パスワードは返さない
   const { password: _, ...userToReturn } = newUser;

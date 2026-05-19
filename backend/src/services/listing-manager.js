@@ -1,5 +1,6 @@
-const fs = require('fs/promises');
 const path = require('path');
+const { readJsonFile, updateJsonFile, writeJsonFileAtomic } = require('./json-file-store');
+const { isDatabaseEnabled, query } = require('./database');
 
 // Renderの永続ディスクに対応するため、DATA_DIR環境変数を参照
 const DATA_DIR = process.env.DATA_DIR || path.resolve(__dirname, '../../');
@@ -30,17 +31,19 @@ function getSuspendedListingsFilePath(userId) {
  * @returns {Promise<object[]>}
  */
 async function loadTrackedListings(userId) {
-  const listingsFile = getListingsFilePath(userId);
-  try {
-    const data = await fs.readFile(listingsFile, 'utf8');
-    return JSON.parse(data);
-  } catch (error) {
-    if (error.code === 'ENOENT') {
-      return []; // ファイルが存在しない場合は空のリストを返す
-    }
-    console.error(`ユーザー(${userId})の出品中リスト読み込み中にエラーが発生しました:`, error);
-    throw error;
+  if (isDatabaseEnabled()) {
+    const result = await query(
+      `SELECT sku, asin, marketplace_id AS "marketplaceId", quantity, price::float AS price, product_type AS "productType"
+       FROM tracked_listings
+       WHERE user_id = $1
+       ORDER BY updated_at ASC`,
+      [userId]
+    );
+    return result.rows;
   }
+
+  const listingsFile = getListingsFilePath(userId);
+  return readJsonFile(listingsFile, []);
 }
 
 /**
@@ -49,42 +52,61 @@ async function loadTrackedListings(userId) {
  * @param {object[]} listings 
  */
 async function saveTrackedListings(userId, listings) {
-  const listingsFile = getListingsFilePath(userId);
-  const userConfigDir = path.dirname(listingsFile);
-  try {
-    // ユーザーごとのディレクトリがなければ作成
-    await fs.mkdir(userConfigDir, { recursive: true });
-    await fs.writeFile(listingsFile, JSON.stringify(listings, null, 2), 'utf8');
-  } catch (error) {
-    console.error(`ユーザー(${userId})の出品中リスト保存中にエラーが発生しました:`, error);
-    throw error;
+  if (isDatabaseEnabled()) {
+    await query('DELETE FROM tracked_listings WHERE user_id = $1', [userId]);
+    for (const listing of listings) {
+      await addTrackedListing(
+        userId,
+        listing.sku,
+        listing.asin,
+        listing.marketplaceId,
+        listing.quantity,
+        listing.price,
+        listing.productType || 'GENERIC'
+      );
+    }
+    return;
   }
+
+  const listingsFile = getListingsFilePath(userId);
+  await writeJsonFileAtomic(listingsFile, listings);
 }
 
 async function loadSuspendedListings(userId) {
-  const suspendedFile = getSuspendedListingsFilePath(userId);
-  try {
-    const data = await fs.readFile(suspendedFile, 'utf8');
-    return JSON.parse(data);
-  } catch (error) {
-    if (error.code === 'ENOENT') {
-      return [];
-    }
-    console.error(`ユーザー(${userId})の停止中リスト読み込み中にエラーが発生しました:`, error);
-    throw error;
+  if (isDatabaseEnabled()) {
+    const result = await query(
+      `SELECT data
+       FROM suspended_listings
+       WHERE user_id = $1
+       ORDER BY updated_at ASC`,
+      [userId]
+    );
+    return result.rows.map(row => row.data);
   }
+
+  const suspendedFile = getSuspendedListingsFilePath(userId);
+  return readJsonFile(suspendedFile, []);
 }
 
 async function saveSuspendedListings(userId, listings) {
+  if (isDatabaseEnabled()) {
+    await query('DELETE FROM suspended_listings WHERE user_id = $1', [userId]);
+    for (const listing of listings) {
+      await addSuspendedListing(
+        userId,
+        listing,
+        listing.suspendedReasonType,
+        listing.suspendedReason
+      );
+    }
+    return;
+  }
+
   const suspendedFile = getSuspendedListingsFilePath(userId);
-  const userConfigDir = path.dirname(suspendedFile);
-  await fs.mkdir(userConfigDir, { recursive: true });
-  await fs.writeFile(suspendedFile, JSON.stringify(listings, null, 2), 'utf8');
+  await writeJsonFileAtomic(suspendedFile, listings);
 }
 
 async function addSuspendedListing(userId, listing, reasonType, reason) {
-  const suspendedListings = await loadSuspendedListings(userId);
-  const existingIndex = suspendedListings.findIndex(l => l.sku === listing.sku && l.marketplaceId === listing.marketplaceId);
   const suspendedListing = {
     ...listing,
     suspendedReasonType: reasonType,
@@ -92,19 +114,57 @@ async function addSuspendedListing(userId, listing, reasonType, reason) {
     suspendedAt: new Date().toISOString(),
   };
 
-  if (existingIndex > -1) {
-    suspendedListings[existingIndex] = suspendedListing;
-  } else {
-    suspendedListings.push(suspendedListing);
+  if (isDatabaseEnabled()) {
+    await query(
+      `INSERT INTO suspended_listings (
+         user_id, sku, marketplace_id, asin, suspended_reason_type, suspended_reason, suspended_at, data, updated_at
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+       ON CONFLICT (user_id, sku, marketplace_id) DO UPDATE SET
+         asin = EXCLUDED.asin,
+         suspended_reason_type = EXCLUDED.suspended_reason_type,
+         suspended_reason = EXCLUDED.suspended_reason,
+         suspended_at = EXCLUDED.suspended_at,
+         data = EXCLUDED.data,
+         updated_at = NOW()`,
+      [
+        userId,
+        suspendedListing.sku,
+        suspendedListing.marketplaceId,
+        suspendedListing.asin,
+        reasonType,
+        reason,
+        suspendedListing.suspendedAt,
+        suspendedListing
+      ]
+    );
+    return;
   }
 
-  await saveSuspendedListings(userId, suspendedListings);
+  await updateJsonFile(getSuspendedListingsFilePath(userId), [], suspendedListings => {
+    const existingIndex = suspendedListings.findIndex(l => l.sku === listing.sku && l.marketplaceId === listing.marketplaceId);
+
+    if (existingIndex > -1) {
+      suspendedListings[existingIndex] = suspendedListing;
+      return suspendedListings;
+    }
+
+    return [...suspendedListings, suspendedListing];
+  });
 }
 
 async function removeSuspendedListing(userId, sku, marketplaceId) {
-  let suspendedListings = await loadSuspendedListings(userId);
-  suspendedListings = suspendedListings.filter(l => !(l.sku === sku && l.marketplaceId === marketplaceId));
-  await saveSuspendedListings(userId, suspendedListings);
+  if (isDatabaseEnabled()) {
+    await query(
+      'DELETE FROM suspended_listings WHERE user_id = $1 AND sku = $2 AND marketplace_id = $3',
+      [userId, sku, marketplaceId]
+    );
+    return;
+  }
+
+  await updateJsonFile(getSuspendedListingsFilePath(userId), [], suspendedListings => (
+    suspendedListings.filter(l => !(l.sku === sku && l.marketplaceId === marketplaceId))
+  ));
 }
 
 /**
@@ -118,20 +178,38 @@ async function removeSuspendedListing(userId, sku, marketplaceId) {
  * @param {string} productType
  */
 async function addTrackedListing(userId, sku, asin, marketplaceId, quantity, price, productType = 'GENERIC') {
-  const listings = await loadTrackedListings(userId);
-  const existingIndex = listings.findIndex(l => l.sku === sku && l.marketplaceId === marketplaceId);
-  
   const listingData = { sku, asin, marketplaceId, quantity, price, productType };
 
-  if (existingIndex > -1) {
-    // 既存の場合は情報を更新
-    listings[existingIndex] = listingData;
-  } else {
-    // 新規の場合は追加
-    listings.push(listingData);
+  if (isDatabaseEnabled()) {
+    await query(
+      `INSERT INTO tracked_listings (
+         user_id, sku, marketplace_id, asin, quantity, price, product_type, data, updated_at
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+       ON CONFLICT (user_id, sku, marketplace_id) DO UPDATE SET
+         asin = EXCLUDED.asin,
+         quantity = EXCLUDED.quantity,
+         price = EXCLUDED.price,
+         product_type = EXCLUDED.product_type,
+         data = EXCLUDED.data,
+         updated_at = NOW()`,
+      [userId, sku, marketplaceId, asin, quantity, price, productType, listingData]
+    );
+    return;
   }
-  
-  await saveTrackedListings(userId, listings);
+
+  await updateJsonFile(getListingsFilePath(userId), [], listings => {
+    const existingIndex = listings.findIndex(l => l.sku === sku && l.marketplaceId === marketplaceId);
+
+    if (existingIndex > -1) {
+      // 既存の場合は情報を更新
+      listings[existingIndex] = listingData;
+      return listings;
+    }
+
+    // 新規の場合は追加
+    return [...listings, listingData];
+  });
 }
 
 /**
@@ -141,9 +219,17 @@ async function addTrackedListing(userId, sku, asin, marketplaceId, quantity, pri
  * @param {string} marketplaceId 
  */
 async function removeTrackedListing(userId, sku, marketplaceId) {
-  let listings = await loadTrackedListings(userId);
-  listings = listings.filter(l => !(l.sku === sku && l.marketplaceId === marketplaceId));
-  await saveTrackedListings(userId, listings);
+  if (isDatabaseEnabled()) {
+    await query(
+      'DELETE FROM tracked_listings WHERE user_id = $1 AND sku = $2 AND marketplace_id = $3',
+      [userId, sku, marketplaceId]
+    );
+    return;
+  }
+
+  await updateJsonFile(getListingsFilePath(userId), [], listings => (
+    listings.filter(l => !(l.sku === sku && l.marketplaceId === marketplaceId))
+  ));
 }
 
 /**
@@ -153,6 +239,17 @@ async function removeTrackedListing(userId, sku, marketplaceId) {
  * @returns {Promise<object|undefined>} 該当する出品情報があればオブジェクト、なければundefined
  */
 async function getTrackedListingByAsin(userId, asin) {
+    if (isDatabaseEnabled()) {
+        const result = await query(
+          `SELECT sku, asin, marketplace_id AS "marketplaceId", quantity, price::float AS price, product_type AS "productType"
+           FROM tracked_listings
+           WHERE user_id = $1 AND asin = $2
+           LIMIT 1`,
+          [userId, asin]
+        );
+        return result.rows[0];
+    }
+
     const listings = await loadTrackedListings(userId);
     return listings.find(listing => listing.asin === asin);
 }

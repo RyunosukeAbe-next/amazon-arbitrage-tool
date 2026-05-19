@@ -9,7 +9,7 @@ const KEEPA_API_ENDPOINT = 'https://api.keepa.com';
  * @returns {Promise<string[]>} ASINの配列
  */
 
-async function getASINsBySellerId(sellerId, marketplaceDomain = 'com') {
+async function getASINsBySellerId(sellerId, marketplaceDomain = 'com', limit = Number(process.env.KEEPA_SELLER_ASIN_LIMIT || 1000)) {
   const apiKey = process.env.KEEPA_API_KEY;
   if (!apiKey) {
     throw new Error('Keepa APIキーが設定されていません。');
@@ -18,6 +18,7 @@ async function getASINsBySellerId(sellerId, marketplaceDomain = 'com') {
   const domainMap = { 'com': 1, 'co.jp': 10 };
   const domainId = domainMap[marketplaceDomain] || 1;
   const cleanSellerId = sellerId.trim();
+  const normalizedLimit = Math.min(Math.max(parseInt(limit, 10) || 1000, 1), 10000);
 
   try {
     // 修正ポイント：axios.get を axios.post に変更し、大量のASIN取得に対応させます
@@ -26,8 +27,7 @@ async function getASINsBySellerId(sellerId, marketplaceDomain = 'com') {
     });
 
     if (response.data && response.data.asinList) {
-      // 修正ポイント：取得件数を 150件（必要に応じて調整）に増やします
-      const activeAsins = response.data.asinList.slice(0, 10000); 
+      const activeAsins = response.data.asinList.slice(0, normalizedLimit); 
       console.log(`[SUCCESS] Keepa API: Found ${response.data.asinList.length} ASINs. Using first ${activeAsins.length}.`);
       return activeAsins;
     }

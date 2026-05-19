@@ -1,6 +1,7 @@
-const fs = require('fs/promises');
 const path = require('path');
 const { applyLatestExchangeRate, shouldRefreshExchangeRate, DEFAULT_REFRESH_INTERVAL_MINUTES } = require('./exchange-rate-service');
+const { readJsonFile, writeJsonFileAtomic, withFileLock } = require('./json-file-store');
+const { isDatabaseEnabled, query } = require('./database');
 
 // Renderの永続ディスクに対応するため、DATA_DIR環境変数を参照
 const DATA_DIR = process.env.DATA_DIR || path.resolve(__dirname, '../../');
@@ -19,6 +20,8 @@ const DEFAULT_SETTINGS = {
   exchangeRateDate: null,
   exchangeRateSource: null,
   inventoryThreshold: 1,
+  leadTimeBuffer: 3,
+  keepaSellerAsinLimit: 1000,
   excludedAsins: [],
   excludedBrands: [],
   excludedKeywords: [],
@@ -114,8 +117,20 @@ function getSettingsFilePath(userId) {
 async function loadSettings(userId) {
   const settingsFile = getSettingsFilePath(userId);
   try {
-    const data = await fs.readFile(settingsFile, 'utf8');
-    let settings = { ...DEFAULT_SETTINGS, ...JSON.parse(data) };
+    let storedSettings;
+    if (isDatabaseEnabled()) {
+      const result = await query('SELECT data FROM user_settings WHERE user_id = $1', [userId]);
+      storedSettings = result.rows[0]?.data;
+      if (!storedSettings) {
+        const error = new Error('settings not found');
+        error.code = 'ENOENT';
+        throw error;
+      }
+    } else {
+      storedSettings = await readJsonFile(settingsFile);
+    }
+
+    let settings = { ...DEFAULT_SETTINGS, ...storedSettings };
     if (!Array.isArray(settings.shippingCostTiers) || settings.shippingCostTiers.length === 0) {
       settings.shippingCostTiers = cloneDefaultShippingCostTiers();
     }
@@ -154,11 +169,20 @@ async function loadSettings(userId) {
  */
 async function saveSettings(userId, settings) {
   const settingsFile = getSettingsFilePath(userId);
-  const userConfigDir = path.dirname(settingsFile);
   try {
-    // ユーザーごとのディレクトリがなければ作成
-    await fs.mkdir(userConfigDir, { recursive: true });
-    await fs.writeFile(settingsFile, JSON.stringify(settings, null, 2), 'utf8');
+    if (isDatabaseEnabled()) {
+      await query(
+        `INSERT INTO user_settings (user_id, data, updated_at)
+         VALUES ($1, $2, NOW())
+         ON CONFLICT (user_id) DO UPDATE SET
+           data = EXCLUDED.data,
+           updated_at = NOW()`,
+        [userId, settings]
+      );
+      return;
+    }
+
+    await withFileLock(settingsFile, () => writeJsonFileAtomic(settingsFile, settings));
   } catch (error) {
     console.error(`ユーザー(${userId})の設定ファイル保存中にエラーが発生しました:`, error);
     throw error;

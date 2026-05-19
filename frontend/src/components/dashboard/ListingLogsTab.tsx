@@ -12,6 +12,9 @@ interface ListingLog {
     status: 'processing' | 'completed' | 'error' | 'cancelled';
     totalAsinCount: number;
     listedProductCount: number;
+    processedAsinCount?: number;
+    resolvedAsinCount?: number;
+    currentAsin?: string;
     createdAt: string;
     updatedAt?: string;
     summary: string;
@@ -82,6 +85,12 @@ const ListingLogsTab: React.FC = () => {
         }
     };
 
+    const getProgressValue = (log: ListingLog) => {
+        if (!log.totalAsinCount) return 0;
+        const processed = Math.min(log.processedAsinCount || 0, log.totalAsinCount);
+        return Math.round((processed / log.totalAsinCount) * 100);
+    };
+
     return (
         <>
             <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
@@ -101,7 +110,7 @@ const ListingLogsTab: React.FC = () => {
                             <TableCell sx={{width: '15%'}}>ID</TableCell>
                             <TableCell sx={{width: '20%'}}>タイトル</TableCell>
                             <TableCell sx={{width: '10%'}}>ステータス</TableCell>
-                            <TableCell sx={{width: '5%'}} align="right">総数</TableCell>
+                            <TableCell sx={{width: '10%'}} align="right">進捗</TableCell>
                             <TableCell sx={{width: '5%'}} align="right">出品数</TableCell>
                             <TableCell sx={{width: '15%'}}>作成日時</TableCell>
                             <TableCell sx={{width: '25%'}}>摘要</TableCell>
@@ -116,7 +125,16 @@ const ListingLogsTab: React.FC = () => {
                                 </TableCell>
                                 <TableCell>{log.title}</TableCell>
                                 <TableCell>{renderStatus(log)}</TableCell>
-                                <TableCell align="right">{log.totalAsinCount}</TableCell>
+                                <TableCell align="right">
+                                    <Typography variant="caption" display="block">
+                                        {log.processedAsinCount || 0}/{log.totalAsinCount}
+                                    </Typography>
+                                    <LinearProgress
+                                        variant="determinate"
+                                        value={log.status === 'completed' ? 100 : getProgressValue(log)}
+                                        sx={{ minWidth: 80 }}
+                                    />
+                                </TableCell>
                                 <TableCell align="right">{log.listedProductCount}</TableCell>
                                 <TableCell>{new Date(log.createdAt).toLocaleString()}</TableCell>
                                 <TableCell>{log.summary}</TableCell>

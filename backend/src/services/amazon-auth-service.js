@@ -1,11 +1,16 @@
 const axios = require('axios');
 const path = require('path');
 const fs = require('fs/promises');
+const crypto = require('crypto');
+const { readJsonFile, writeJsonFileAtomic } = require('./json-file-store');
+const { isDatabaseEnabled, query } = require('./database');
 
 // Renderの永続ディスクに対応するため、DATA_DIR環境変数を参照
 const DATA_DIR = process.env.DATA_DIR || path.resolve(__dirname, '../../');
 const CONFIG_DIR = path.join(DATA_DIR, 'config');
 const AUTH_FILE_NAME = 'amazon_auth.json';
+const OAUTH_STATE_FILE_NAME = 'amazon_oauth_state.json';
+const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 
 /**
  * ユーザーごとの認証情報ディレクトリのパスを取得
@@ -24,27 +29,23 @@ function getUserAuthFilePath(userId) {
     return path.join(getUserAuthConfigDir(userId), AUTH_FILE_NAME);
 }
 
+function getUserOAuthStateFilePath(userId) {
+    return path.join(getUserAuthConfigDir(userId), OAUTH_STATE_FILE_NAME);
+}
+
 /**
  * ユーザーのAmazon認証情報を読み込む
  * @param {string} userId
  * @returns {Promise<object|null>}
  */
 async function loadUserAmazonAuth(userId) {
-    const authFilePath = getUserAuthFilePath(userId);
-    try {
-        let data = await fs.readFile(authFilePath, 'utf8');
-        // BOM (Byte Order Mark) が含まれている場合は削除する
-        if (data.charCodeAt(0) === 0xFEFF) {
-            data = data.slice(1);
-        }
-        return JSON.parse(data);
-    } catch (error) {
-        if (error.code === 'ENOENT') {
-            return null; // ファイルがなければ認証情報なし
-        }
-        console.error(`[User ${userId}] Error loading amazon auth file:`, error);
-        throw error;
+    if (isDatabaseEnabled()) {
+        const result = await query('SELECT data FROM amazon_auth WHERE user_id = $1', [userId]);
+        return result.rows[0]?.data || null;
     }
+
+    const authFilePath = getUserAuthFilePath(userId);
+    return readJsonFile(authFilePath, null);
 }
 
 /**
@@ -53,10 +54,122 @@ async function loadUserAmazonAuth(userId) {
  * @param {object} authData
  */
 async function saveUserAmazonAuth(userId, authData) {
-    const authDirPath = getUserAuthConfigDir(userId);
-    await fs.mkdir(authDirPath, { recursive: true });
+    if (isDatabaseEnabled()) {
+        await query(
+            `INSERT INTO amazon_auth (user_id, data, updated_at)
+             VALUES ($1, $2, NOW())
+             ON CONFLICT (user_id) DO UPDATE SET
+               data = EXCLUDED.data,
+               updated_at = NOW()`,
+            [userId, authData]
+        );
+        return;
+    }
+
     const authFilePath = getUserAuthFilePath(userId);
-    await fs.writeFile(authFilePath, JSON.stringify(authData, null, 2), 'utf8');
+    await writeJsonFileAtomic(authFilePath, authData);
+}
+
+async function deleteUserAmazonAuth(userId) {
+    if (isDatabaseEnabled()) {
+        const result = await query('DELETE FROM amazon_auth WHERE user_id = $1', [userId]);
+        return result.rowCount > 0;
+    }
+
+    try {
+        await fs.unlink(getUserAuthFilePath(userId));
+        return true;
+    } catch (error) {
+        if (error.code === 'ENOENT') {
+            return false;
+        }
+        throw error;
+    }
+}
+
+async function createUserOAuthState(userId) {
+    const state = crypto.randomBytes(32).toString('hex');
+    const issuedAt = new Date();
+    const stateData = {
+        state,
+        issuedAt: issuedAt.toISOString(),
+        expiresAt: new Date(issuedAt.getTime() + OAUTH_STATE_TTL_MS).toISOString(),
+    };
+
+    if (isDatabaseEnabled()) {
+        await query(
+            `INSERT INTO amazon_oauth_states (user_id, state, issued_at, expires_at)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT (user_id) DO UPDATE SET
+               state = EXCLUDED.state,
+               issued_at = EXCLUDED.issued_at,
+               expires_at = EXCLUDED.expires_at`,
+            [userId, stateData.state, stateData.issuedAt, stateData.expiresAt]
+        );
+        return state;
+    }
+
+    await writeJsonFileAtomic(getUserOAuthStateFilePath(userId), stateData);
+    return state;
+}
+
+async function deleteUserOAuthState(userId) {
+    if (isDatabaseEnabled()) {
+        await query('DELETE FROM amazon_oauth_states WHERE user_id = $1', [userId]);
+        return;
+    }
+
+    try {
+        await fs.unlink(getUserOAuthStateFilePath(userId));
+    } catch (error) {
+        if (error.code !== 'ENOENT') {
+            throw error;
+        }
+    }
+}
+
+async function verifyAndConsumeUserOAuthState(userId, receivedState) {
+    if (!receivedState) {
+        throw new Error('Amazon認証stateがありません。再度連携を開始してください。');
+    }
+
+    let stateData;
+    try {
+        if (isDatabaseEnabled()) {
+            const result = await query(
+                'SELECT state, issued_at AS "issuedAt", expires_at AS "expiresAt" FROM amazon_oauth_states WHERE user_id = $1',
+                [userId]
+            );
+            stateData = result.rows[0];
+            if (!stateData) {
+                const error = new Error('state not found');
+                error.code = 'ENOENT';
+                throw error;
+            }
+        } else {
+            stateData = await readJsonFile(getUserOAuthStateFilePath(userId));
+        }
+    } catch (error) {
+        if (error.code === 'ENOENT') {
+            throw new Error('Amazon認証stateが見つかりません。再度連携を開始してください。');
+        }
+        throw error;
+    }
+
+    const expiresAt = new Date(stateData.expiresAt);
+    if (!stateData.state || Number.isNaN(expiresAt.getTime()) || Date.now() > expiresAt.getTime()) {
+        await deleteUserOAuthState(userId);
+        throw new Error('Amazon認証stateの有効期限が切れています。再度連携を開始してください。');
+    }
+
+    const expected = Buffer.from(stateData.state);
+    const actual = Buffer.from(String(receivedState));
+    if (expected.length !== actual.length || !crypto.timingSafeEqual(expected, actual)) {
+        throw new Error('Amazon認証stateが一致しません。再度連携を開始してください。');
+    }
+
+    await deleteUserOAuthState(userId);
+    return true;
 }
 
 /**
@@ -157,9 +270,13 @@ async function refreshAccessToken(refreshToken) {
 
 
 module.exports = {
+    getUserAuthFilePath,
     getAuthorizationUrl,
+    createUserOAuthState,
+    verifyAndConsumeUserOAuthState,
     exchangeCodeForTokens,
     refreshAccessToken,
     loadUserAmazonAuth,
     saveUserAmazonAuth,
+    deleteUserAmazonAuth,
 };

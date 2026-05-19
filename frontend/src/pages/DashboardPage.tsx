@@ -32,6 +32,8 @@ export type SearchJobStatus = 'waiting' | 'fetching' | 'completed' | 'error' | '
 
 export interface SearchJob {
   id: string;
+  backendJobId?: string;
+  createdAt?: string;
   name: string;
   params: any;
   status: SearchJobStatus;
@@ -70,7 +72,7 @@ const DashboardPage: React.FC = () => {
       if (!Array.isArray(parsedQueue)) return [];
       return parsedQueue.map((job: SearchJob) => ({
         ...job,
-        status: job.status === 'fetching' ? 'fetching' : 'waiting',
+        status: job.status === 'error' ? 'error' : 'waiting',
       }));
     } catch (error) {
       console.error('Failed to load active search queue', error);
@@ -115,16 +117,52 @@ const DashboardPage: React.FC = () => {
 
     try {
       const { paramsSerializer, ...params } = jobToRun.params;
-      const config = {
-        params,
-        signal: controller.signal,
-        ...(paramsSerializer && { paramsSerializer })
-      };
-      const response = await api.get('/search', config);
+      let backendJobId = jobToRun.backendJobId;
+
+      if (!backendJobId) {
+        const createResponse = await api.post('/search-jobs', { ...params, name: jobToRun.name }, {
+          signal: controller.signal,
+        });
+        backendJobId = createResponse.data.job.id;
+        setSearchQueue(prev => prev.map(job =>
+          job.id === jobId
+            ? { ...job, backendJobId, message: createResponse.data.job.message }
+            : job
+        ));
+      }
+
+      let responseData: any = null;
+      while (!controller.signal.aborted) {
+        const pollResponse = await api.get(`/search-jobs/${backendJobId}`, {
+          signal: controller.signal,
+        });
+        const backendJob = pollResponse.data.job;
+
+        setSearchQueue(prev => prev.map(job =>
+          job.id === jobId
+            ? { ...job, status: backendJob.status, message: backendJob.message, backendJobId }
+            : job
+        ));
+
+        if (backendJob.status === 'completed') {
+          responseData = backendJob.result;
+          break;
+        }
+
+        if (backendJob.status === 'cancelled') {
+          return;
+        }
+
+        if (backendJob.status === 'error') {
+          throw new Error(backendJob.error || backendJob.message || 'リサーチ中にエラーが発生しました。');
+        }
+
+        await new Promise(resolve => window.setTimeout(resolve, 3000));
+      }
       
       // 完了したジョブをキューから削除
       setSearchQueue(prev => prev.filter(j => j.id !== jobId));
-      setCompletedSearchResults(response.data.products || []);
+      setCompletedSearchResults(responseData?.products || []);
       
     } catch (err: any) {
       // キャンセルされた場合はエラーとして扱わない
@@ -133,7 +171,7 @@ const DashboardPage: React.FC = () => {
         return; // handleCancelJobでキューから削除されるので、ここでは何もしない
       }
       
-      const errorMessage = err.response?.data?.error || 'リサーチ中にエラーが発生しました。';
+      const errorMessage = err.response?.data?.error || err.message || 'リサーチ中にエラーが発生しました。';
       setSearchQueue(prev => prev.map(job =>
         job.id === jobId
           ? { ...job, status: 'error', message: errorMessage }
@@ -143,8 +181,10 @@ const DashboardPage: React.FC = () => {
   };
 
   const handleAddToQueue = (name: string, params: any) => {
+    const createdAt = new Date().toISOString();
     const newJob: SearchJob = {
-      id: `${new Date().toISOString()}-${Math.random()}`,
+      id: `${createdAt}-${Math.random()}`,
+      createdAt,
       name,
       params,
       status: 'waiting',
@@ -161,6 +201,9 @@ const DashboardPage: React.FC = () => {
     const jobToCancel = queueRef.current.find(job => job.id === jobId);
 
     if (jobToCancel) {
+      if (jobToCancel.backendJobId) {
+        api.delete(`/search-jobs/${jobToCancel.backendJobId}`).catch(() => undefined);
+      }
       if (jobToCancel.status === 'fetching' && jobToCancel.abortController) {
         jobToCancel.abortController.abort();
       }
@@ -170,7 +213,7 @@ const DashboardPage: React.FC = () => {
 
   const handlePruneCompletedJobs = useCallback((logs: any[]) => {
     setSearchQueue(prev => prev.filter(job => {
-      const jobStartedAt = new Date(job.id.split('-')[0]).getTime();
+      const jobStartedAt = new Date(job.createdAt || job.id.split('-').slice(0, 3).join('-')).getTime();
       const matchingCompletedLog = logs.some(log => {
         const logCreatedAt = new Date(log.createdAt).getTime();
         return (

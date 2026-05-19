@@ -3,10 +3,12 @@ const listingManager = require('./listing-manager');
 const spApiClient = require('./sp-api-client');
 const settingsManager = require('./settings-manager');
 const userManager = require('./user-manager');
-const { calculateProfit, isExcluded } = require('./profit-calculator');
-
-const US_MARKETPLACE_ID = 'ATVPDKIKX0DER';
-const JP_MARKETPLACE_ID = 'A1VC38T7YXB528';
+const {
+  US_MARKETPLACE_ID,
+  JP_MARKETPLACE_ID,
+  getListingMarketData,
+  evaluateListingProfitability,
+} = require('./listing-evaluation-service');
 
 // At every 15th minute.
 const CRON_SCHEDULE = '*/15 * * * *';
@@ -68,14 +70,12 @@ async function updateActiveListings(userId, settings, usListings) {
   const asins = [...new Set(usListings.map(l => l.asin))];
   console.log(`[PriceAdjuster] User ${userId}: Checking prices for ${asins.length} ASINs.`);
 
-  const [usCompetitivePrices, jpCompetitivePrices] = await Promise.all([
-    spApiClient.getCompetitivePricingForAsins(asins, US_MARKETPLACE_ID, userId),
-    spApiClient.getCompetitivePricingForAsins(asins, JP_MARKETPLACE_ID, userId)
-  ]);
+  const marketData = await getListingMarketData(userId, asins);
 
   for (const listing of usListings) {
-    const usPriceInfo = usCompetitivePrices[listing.asin];
-    const jpPriceInfo = jpCompetitivePrices[listing.asin];
+    const asin = String(listing.asin).trim().toUpperCase();
+    const usPriceInfo = marketData.usPricing[asin];
+    const jpPriceInfo = marketData.jpPricing[asin];
     const newPrice = usPriceInfo ? usPriceInfo.price : null;
 
     if (!newPrice || !jpPriceInfo || !jpPriceInfo.price) {
@@ -83,11 +83,9 @@ async function updateActiveListings(userId, settings, usListings) {
       continue;
     }
 
-    const tempProduct = { asin: listing.asin, usPrice: newPrice, jpPrice: jpPriceInfo.price };
-    const profitResult = calculateProfit(tempProduct, settings);
-    const exclusionInfo = isExcluded(tempProduct, settings, profitResult);
+    const { exclusionInfo } = evaluateListingProfitability(asin, settings, marketData);
 
-    if (exclusionInfo.excluded) {
+    if (exclusionInfo?.excluded) {
       console.log(`[PriceAdjuster] User ${userId}: SKU ${listing.sku} has become unprofitable. Delisting. Reason: ${exclusionInfo.reason}`);
       try {
         await spApiClient.deleteListingsItem(listing.sku, listing.marketplaceId, userId);
@@ -157,21 +155,19 @@ async function relistRecoveredSuspendedListings(userId, settings) {
 
   console.log(`[PriceAdjuster] User ${userId}: Checking ${listingsToCheck.length} suspended listings for relist.`);
 
-  const [usCompetitivePrices, jpCompetitivePrices] = await Promise.all([
-    spApiClient.getCompetitivePricingForAsins(asins, US_MARKETPLACE_ID, userId),
-    spApiClient.getCompetitivePricingForAsins(asins, JP_MARKETPLACE_ID, userId)
-  ]);
+  const marketData = await getListingMarketData(userId, asins);
 
   const inventoryThreshold = settings.inventoryThreshold || 1;
 
   for (const listing of listingsToCheck) {
+    const asin = String(listing.asin).trim().toUpperCase();
     if (activeAsins.has(listing.asin)) {
       await listingManager.removeSuspendedListing(userId, listing.sku, listing.marketplaceId);
       continue;
     }
 
-    const usPriceInfo = usCompetitivePrices[listing.asin];
-    const jpPriceInfo = jpCompetitivePrices[listing.asin];
+    const usPriceInfo = marketData.usPricing[asin];
+    const jpPriceInfo = marketData.jpPricing[asin];
 
     if (!usPriceInfo?.price || !jpPriceInfo?.price) {
       console.log(`[PriceAdjuster] User ${userId}: Suspended SKU ${listing.sku} still lacks pricing info.`);
@@ -183,11 +179,9 @@ async function relistRecoveredSuspendedListings(userId, settings) {
       continue;
     }
 
-    const tempProduct = { asin: listing.asin, usPrice: usPriceInfo.price, jpPrice: jpPriceInfo.price };
-    const profitResult = calculateProfit(tempProduct, settings);
-    const exclusionInfo = isExcluded(tempProduct, settings, profitResult);
+    const { exclusionInfo } = evaluateListingProfitability(asin, settings, marketData);
 
-    if (exclusionInfo.excluded) {
+    if (exclusionInfo?.excluded) {
       console.log(`[PriceAdjuster] User ${userId}: Suspended SKU ${listing.sku} is still excluded. Reason: ${exclusionInfo.reason}`);
       continue;
     }

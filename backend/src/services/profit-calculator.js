@@ -13,6 +13,8 @@ function calculateProfit(product, settings) {
       internationalShippingBaseCostJpy: 0,
       internationalShippingFscJpy: 0,
       internationalShippingFixedFeeJpy: 0,
+      shippingWeightGrams: null,
+      isShippingWeightEstimated: false,
       customsDutyJpy: 0,
       amazonFeeJpy: 0,
       sellingPriceJpy: 0,
@@ -35,30 +37,54 @@ function calculateProfit(product, settings) {
   const amazonFeeJpy = sellingPriceJpy * (amazonFeeRate || 0.15);
 
   // 2. 国際送料の計算 (Tiered logic is kept)
-  const parseWeight = (weightString) => {
-    if (!weightString || typeof weightString !== 'string') return 0;
-    const parts = weightString.toLowerCase().split(' ');
-    const value = parseFloat(parts[0]) || 0;
-    const unit = parts[1] || 'g';
+  const parseWeight = (weightInput) => {
+    if (typeof weightInput === 'number') {
+      return weightInput > 0 ? weightInput : null;
+    }
+
+    if (weightInput && typeof weightInput === 'object') {
+      const value = Number(weightInput.value);
+      if (!Number.isFinite(value) || value <= 0) return null;
+      return parseWeight(`${value} ${weightInput.unit || 'g'}`);
+    }
+
+    if (!weightInput || typeof weightInput !== 'string') return null;
+    const match = weightInput.trim().toLowerCase().match(/^([0-9]+(?:\.[0-9]+)?)\s*([a-z]*)/);
+    if (!match) return null;
+
+    const value = Number(match[1]);
+    if (!Number.isFinite(value) || value <= 0) return null;
+    const unit = match[2] || 'g';
     if (unit === 'kg' || unit === 'kilogram' || unit === 'kilograms') return value * 1000;
     if (unit === 'g' || unit === 'gram' || unit === 'grams') return value;
     if (unit === 'ounce' || unit === 'ounces' || unit === 'oz') return value * 28.35;
     if (unit === 'pound' || unit === 'pounds' || unit === 'lb' || unit === 'lbs') return value * 453.592;
     return value; // Assume grams if no unit or unknown unit
   };
-  const itemWeightGrams = parseWeight(weight);
+  const parsedWeightGrams = parseWeight(weight);
+  let shippingWeightGrams = parsedWeightGrams;
+  let isShippingWeightEstimated = false;
   let internationalShippingBaseCostJpy = 0;
   let internationalShippingFscJpy = 0;
   let appliedInternationalShippingFixedFeeJpy = 0;
   let internationalShippingCostJpy = 0;
   if (shippingCostTiers && shippingCostTiers.length > 0) {
-    const shippingTier = shippingCostTiers.find(t => itemWeightGrams >= t.fromWeight && itemWeightGrams <= t.toWeight);
+    const highestTier = shippingCostTiers.reduce((highest, tier) => (
+      Number(tier.toWeight) > Number(highest.toWeight) ? tier : highest
+    ), shippingCostTiers[0]);
+
+    if (shippingWeightGrams === null) {
+      shippingWeightGrams = Number(highestTier.toWeight) || null;
+      isShippingWeightEstimated = true;
+    }
+
+    const shippingTier = shippingCostTiers.find(t => shippingWeightGrams >= t.fromWeight && shippingWeightGrams <= t.toWeight);
     if (shippingTier) {
       internationalShippingBaseCostJpy = shippingTier.cost;
-    } else if (itemWeightGrams > 0) {
-      const highestTier = shippingCostTiers[shippingCostTiers.length - 1];
-      if (itemWeightGrams > highestTier.toWeight) {
-         internationalShippingBaseCostJpy = highestTier.cost; // Use highest cost as fallback
+    } else if (shippingWeightGrams > 0) {
+      if (shippingWeightGrams > highestTier.toWeight) {
+        internationalShippingBaseCostJpy = highestTier.cost;
+        isShippingWeightEstimated = parsedWeightGrams === null;
       }
     }
   }
@@ -89,6 +115,8 @@ function calculateProfit(product, settings) {
     internationalShippingBaseCostJpy,
     internationalShippingFscJpy,
     internationalShippingFixedFeeJpy: appliedInternationalShippingFixedFeeJpy,
+    shippingWeightGrams,
+    isShippingWeightEstimated,
     customsDutyJpy,
     amazonFeeJpy,
     sellingPriceJpy,

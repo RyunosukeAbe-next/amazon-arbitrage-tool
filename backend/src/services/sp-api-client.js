@@ -2,6 +2,57 @@ const SpApi = require('amazon-sp-api');
 const amazonAuthService = require('./amazon-auth-service'); // ★ 追加
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+const CACHE_MAX_ENTRIES = Number(process.env.SPAPI_CACHE_MAX_ENTRIES || 5000);
+const PRICING_CACHE_TTL_MS = Number(process.env.SPAPI_PRICING_CACHE_TTL_MS || 5 * 60 * 1000);
+const CATALOG_CACHE_TTL_MS = Number(process.env.SPAPI_CATALOG_CACHE_TTL_MS || 60 * 60 * 1000);
+const ATTRIBUTES_CACHE_TTL_MS = Number(process.env.SPAPI_ATTRIBUTES_CACHE_TTL_MS || 60 * 60 * 1000);
+const responseCache = new Map();
+
+function makeCacheKey(scope, userId, marketplaceId, asin) {
+    return `${scope}:${userId || 'default'}:${marketplaceId}:${String(asin).trim().toUpperCase()}`;
+}
+
+function getCachedValue(key) {
+    const entry = responseCache.get(key);
+    if (!entry) return undefined;
+    if (entry.expiresAt <= Date.now()) {
+        responseCache.delete(key);
+        return undefined;
+    }
+    return entry.value;
+}
+
+function setCachedValue(key, value, ttlMs) {
+    if (responseCache.size >= CACHE_MAX_ENTRIES) {
+        const oldestKey = responseCache.keys().next().value;
+        if (oldestKey) responseCache.delete(oldestKey);
+    }
+    responseCache.set(key, {
+        value,
+        expiresAt: Date.now() + ttlMs,
+    });
+}
+
+function readAsinCache(scope, asins, marketplaceId, userId) {
+    const cached = {};
+    const missing = [];
+
+    for (const asin of asins) {
+        const key = makeCacheKey(scope, userId, marketplaceId, asin);
+        const value = getCachedValue(key);
+        if (value === undefined) {
+            missing.push(asin);
+        } else if (value !== null) {
+            cached[asin] = value;
+        }
+    }
+
+    return { cached, missing };
+}
+
+function writeAsinCache(scope, marketplaceId, userId, asin, value, ttlMs) {
+    setCachedValue(makeCacheKey(scope, userId, marketplaceId, asin), value, ttlMs);
+}
 
 async function callApiWithRetries(spApiClient, request, label, maxRetries = 3) {
     let lastError;
@@ -241,18 +292,26 @@ async function getCompetitivePricingForAsins(asins, marketplaceId, userId, isCan
     if (!asins || asins.length === 0) {
         return {};
     }
-    console.log(`SP-API Pricing: Getting prices for ${asins.length} ASINs in ${marketplaceId}`);
+    const uniqueAsins = [...new Set(asins.map(asin => String(asin).trim().toUpperCase()).filter(Boolean))];
+    const { cached, missing } = readAsinCache('pricing', uniqueAsins, marketplaceId, userId);
+    const allPricing = { ...cached };
+
+    if (missing.length === 0) {
+        console.log(`SP-API Pricing: Cache hit for ${uniqueAsins.length} ASINs in ${marketplaceId}`);
+        return allPricing;
+    }
+
+    console.log(`SP-API Pricing: Getting prices for ${missing.length}/${uniqueAsins.length} ASINs in ${marketplaceId}`);
     
     const { client: spApiClient } = await getSpApiClient(marketplaceId, userId);
-    const allPricing = {};
 
     const chunkSize = 20;
-    for (let i = 0; i < asins.length; i += chunkSize) {
+    for (let i = 0; i < missing.length; i += chunkSize) {
         if (isCancelled()) {
             console.log(`SP-API Pricing: Process cancelled by client.`);
             break;
         }
-        const chunk = asins.slice(i, i + chunkSize);
+        const chunk = missing.slice(i, i + chunkSize);
         
         try {
             const res = await callApiWithRetries(spApiClient, {
@@ -286,12 +345,14 @@ async function getCompetitivePricingForAsins(asins, marketplaceId, userId, isCan
                         const sellerCount = newOffer ? newOffer.Count : 0;
 
                         if (landedPrice !== undefined) {
-                            allPricing[result.ASIN] = {
+                            const pricing = {
                                 price: landedPrice,
                                 sellerCount: sellerCount,
                                 // 日本のリードタイム情報の器を用意（将来的にoffers API等で取得可能）
                                 leadTime: marketplaceId === 'A1VC38T7YXB528' ? 2 : undefined, 
                             };
+                            allPricing[result.ASIN] = pricing;
+                            writeAsinCache('pricing', marketplaceId, userId, result.ASIN, pricing, PRICING_CACHE_TTL_MS);
                         } else {
                             console.log(`[Pricing] ASIN ${result.ASIN} has no active BuyBox in ${marketplaceId}. Attempting fallback to item offers...`);
                             
@@ -305,14 +366,18 @@ async function getCompetitivePricingForAsins(asins, marketplaceId, userId, isCan
                             
                             if (fallbackData && fallbackData.price > 0) {
                                 console.log(`[Pricing] ASIN ${result.ASIN} fallback successful. Found lowest price: ${fallbackData.price} (Sellers: ${fallbackData.sellerCount})`);
-                                allPricing[result.ASIN] = { 
+                                const pricing = { 
                                     price: fallbackData.price, 
                                     sellerCount: fallbackData.sellerCount, 
                                     leadTime: marketplaceId === 'A1VC38T7YXB528' ? 2 : undefined 
                                 };
+                                allPricing[result.ASIN] = pricing;
+                                writeAsinCache('pricing', marketplaceId, userId, result.ASIN, pricing, PRICING_CACHE_TTL_MS);
                             } else {
                                 console.log(`[Pricing] ASIN ${result.ASIN} fallback failed or no new offers found.`);
-                                allPricing[result.ASIN] = { price: 0, sellerCount: 0, leadTime: marketplaceId === 'A1VC38T7YXB528' ? 2 : undefined };
+                                const pricing = { price: 0, sellerCount: 0, leadTime: marketplaceId === 'A1VC38T7YXB528' ? 2 : undefined };
+                                allPricing[result.ASIN] = pricing;
+                                writeAsinCache('pricing', marketplaceId, userId, result.ASIN, pricing, PRICING_CACHE_TTL_MS);
                             }
                         }
                     }
@@ -322,8 +387,16 @@ async function getCompetitivePricingForAsins(asins, marketplaceId, userId, isCan
             console.error(`SP-API Pricing (${marketplaceId}) のチャンク処理中にエラーが発生しました:`, error);
         }
 
-        if (i + chunkSize < asins.length) {
+        if (i + chunkSize < missing.length) {
             await sleep(1200);
+        }
+    }
+
+    for (const asin of missing) {
+        if (!allPricing[asin] && !isCancelled()) {
+            const pricing = { price: 0, sellerCount: 0, leadTime: marketplaceId === 'A1VC38T7YXB528' ? 2 : undefined };
+            allPricing[asin] = pricing;
+            writeAsinCache('pricing', marketplaceId, userId, asin, pricing, PRICING_CACHE_TTL_MS);
         }
     }
     
@@ -549,61 +622,111 @@ async function getCatalogItemsByAsins(asins, marketplaceId, userId, isCancelled 
     if (!asins || asins.length === 0) {
         return [];
     }
-    console.log(`SP-API Catalog: Getting item details for ${asins.length} ASINs...`);
+    const uniqueAsins = [...new Set(asins.map(asin => String(asin).trim().toUpperCase()).filter(Boolean))];
+    const { cached, missing } = readAsinCache('catalog', uniqueAsins, marketplaceId, userId);
+    const productsByAsin = { ...cached };
+
+    if (missing.length === 0) {
+        console.log(`SP-API Catalog: Cache hit for ${uniqueAsins.length} ASINs.`);
+        return uniqueAsins.map(asin => productsByAsin[asin]).filter(Boolean);
+    }
+
+    console.log(`SP-API Catalog: Getting item details for ${missing.length}/${uniqueAsins.length} ASINs...`);
     
     const { client: spApiClient } = await getSpApiClient(marketplaceId, userId);
-    
-    try {
-        const res = await spApiClient.callAPI({
-            method: 'GET',
-            api_path: '/catalog/2022-04-01/items',
-            query: {
-                marketplaceIds: marketplaceId,
-                identifiers: asins.join(','),
-                identifiersType: 'ASIN',
-                includedData: 'summaries,productTypes', 
-                pageSize: 20, 
-            },
-        });
 
-        if (res.items && res.items.length > 0) {
-            return res.items.map(item => {
-                // productTypes は [{ productType: '...', marketplaceId: '...' }] の形式
-                const pTypeObj = item.productTypes?.[0];
-                const pType = (pTypeObj && typeof pTypeObj === 'object') ? pTypeObj.productType : (pTypeObj || 'PRODUCT');
-                
-                console.log(`[Catalog] ASIN ${item.asin} resolved to ProductType: ${pType}`);
-                return {
-                    asin: item.asin,
-                    productName: item.summaries?.[0]?.itemName || 'N/A',
-                    brand: item.summaries?.[0]?.brand || 'N/A',
-                    productType: pType, 
-                };
-            });
+    const seenAsins = new Set();
+    const chunkSize = 20;
+
+    for (let i = 0; i < missing.length; i += chunkSize) {
+        if (isCancelled()) {
+            console.log('SP-API Catalog: Process cancelled by client.');
+            break;
         }
-        return [];
-    } catch (error) {
-        console.error(`SP-API Catalog (getCatalogItemsByAsins) の呼び出し中にエラーが発生しました:`, error);
-        return [];
+
+        const chunk = missing.slice(i, i + chunkSize);
+        const chunkNumber = Math.floor(i / chunkSize) + 1;
+
+        try {
+            const res = await callApiWithRetries(spApiClient, {
+                method: 'GET',
+                api_path: '/catalog/2022-04-01/items',
+                query: {
+                    marketplaceIds: marketplaceId,
+                    identifiers: chunk.join(','),
+                    identifiersType: 'ASIN',
+                    includedData: 'summaries,productTypes',
+                    pageSize: 20,
+                },
+            }, `SP-API Catalog (${marketplaceId}) chunk ${chunkNumber}`);
+
+            if (res.items && res.items.length > 0) {
+                for (const item of res.items) {
+                    if (!item.asin || seenAsins.has(item.asin)) {
+                        continue;
+                    }
+
+                    seenAsins.add(item.asin);
+
+                    // productTypes は [{ productType: '...', marketplaceId: '...' }] の形式
+                    const pTypeObj = item.productTypes?.[0];
+                    const pType = (pTypeObj && typeof pTypeObj === 'object') ? pTypeObj.productType : (pTypeObj || 'PRODUCT');
+
+                    console.log(`[Catalog] ASIN ${item.asin} resolved to ProductType: ${pType}`);
+                    const product = {
+                        asin: item.asin,
+                        productName: item.summaries?.[0]?.itemName || 'N/A',
+                        brand: item.summaries?.[0]?.brand || 'N/A',
+                        productType: pType,
+                    };
+                    productsByAsin[item.asin] = product;
+                    writeAsinCache('catalog', marketplaceId, userId, item.asin, product, CATALOG_CACHE_TTL_MS);
+                }
+            }
+        } catch (error) {
+            console.error(`SP-API Catalog (${marketplaceId}) chunk ${chunkNumber} の処理中にエラーが発生しました:`, error.message || error);
+        }
+
+        if (i + chunkSize < missing.length) {
+            await sleep(1200);
+        }
     }
+
+    for (const asin of missing) {
+        if (!productsByAsin[asin] && !isCancelled()) {
+            writeAsinCache('catalog', marketplaceId, userId, asin, null, CATALOG_CACHE_TTL_MS);
+        }
+    }
+
+    const allProducts = uniqueAsins.map(asin => productsByAsin[asin]).filter(Boolean);
+    console.log(`SP-API Catalog: Found item details for ${allProducts.length}/${uniqueAsins.length} ASINs.`);
+    return allProducts;
 }
 
 async function getProductAttributesForAsins(asins, marketplaceId, userId, isCancelled = () => false) {
     if (!asins || asins.length === 0) {
         return {};
     }
-    console.log(`SP-API Attributes: Getting attributes for ${asins.length} ASINs in ${marketplaceId}`);
+    const uniqueAsins = [...new Set(asins.map(asin => String(asin).trim().toUpperCase()).filter(Boolean))];
+    const { cached, missing } = readAsinCache('attributes', uniqueAsins, marketplaceId, userId);
+    const allAttributes = { ...cached };
+
+    if (missing.length === 0) {
+        console.log(`SP-API Attributes: Cache hit for ${uniqueAsins.length} ASINs in ${marketplaceId}`);
+        return allAttributes;
+    }
+
+    console.log(`SP-API Attributes: Getting attributes for ${missing.length}/${uniqueAsins.length} ASINs in ${marketplaceId}`);
     
     const { client: spApiClient } = await getSpApiClient(marketplaceId, userId);
-    const allAttributes = {};
 
     const chunkSize = 20; 
-    for (let i = 0; i < asins.length; i += chunkSize) {
+    for (let i = 0; i < missing.length; i += chunkSize) {
         if (isCancelled()) {
             console.log(`SP-API Attributes: Process cancelled by client.`);
             break;
         }
-        const chunk = asins.slice(i, i + chunkSize);
+        const chunk = missing.slice(i, i + chunkSize);
         
         try {
             const res = await callApiWithRetries(spApiClient, {
@@ -639,20 +762,28 @@ async function getProductAttributesForAsins(asins, marketplaceId, userId, isCanc
                     const category = attributes.product_type_name?.[0] || 'N/A';
                     const hasVariations = relationships.some(rel => rel.type === 'VARIATION');
 
-                    allAttributes[item.asin] = {
+                    const productAttributes = {
                         weight,
                         volume,
                         category,
                         hasVariations,
                     };
+                    allAttributes[item.asin] = productAttributes;
+                    writeAsinCache('attributes', marketplaceId, userId, item.asin, productAttributes, ATTRIBUTES_CACHE_TTL_MS);
                 }
             }
         } catch (error) {
             console.error(`SP-API Attributes (${marketplaceId}) のチャンク処理中にエラーが発生しました:`, error);
         }
 
-        if (i + chunkSize < asins.length) {
+        if (i + chunkSize < missing.length) {
             await sleep(1200);
+        }
+    }
+
+    for (const asin of missing) {
+        if (!allAttributes[asin] && !isCancelled()) {
+            writeAsinCache('attributes', marketplaceId, userId, asin, null, ATTRIBUTES_CACHE_TTL_MS);
         }
     }
     

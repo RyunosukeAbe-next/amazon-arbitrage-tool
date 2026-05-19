@@ -1,9 +1,14 @@
 const cron = require('node-cron');
 const { loadTrackedListings, removeTrackedListing, addSuspendedListing } = require('./listing-manager');
-const { getCompetitivePricingForAsins, deleteListingsItem } = require('./sp-api-client');
+const { deleteListingsItem } = require('./sp-api-client');
 const { loadSettings } = require('./settings-manager');
 const { getAllUsers } = require('./user-manager');
-const { calculateProfit, isExcluded } = require('./profit-calculator');
+const {
+  US_MARKETPLACE_ID,
+  JP_MARKETPLACE_ID,
+  getListingMarketData,
+  evaluateListingProfitability,
+} = require('./listing-evaluation-service');
 
 const cronSchedule = '0 * * * *'; 
 let isRunning = false;
@@ -49,7 +54,7 @@ async function checkInventoryForUser(userId) {
     const settings = await loadSettings(userId);
     const inventoryThreshold = settings.inventoryThreshold || 1; 
 
-    const usListings = trackedListings.filter(l => l.marketplaceId === 'ATVPDKIKX0DER');
+    const usListings = trackedListings.filter(l => l.marketplaceId === US_MARKETPLACE_ID);
     if (usListings.length === 0) {
         console.log(`[ユーザーID: ${userId}] 追跡中の米国商品はありません。`);
         return;
@@ -57,13 +62,11 @@ async function checkInventoryForUser(userId) {
     
     const asinsToCheck = usListings.map(l => l.asin);
 
-    const [usPricing, jpPricing] = await Promise.all([
-        getCompetitivePricingForAsins(asinsToCheck, 'ATVPDKIKX0DER', userId),
-        getCompetitivePricingForAsins(asinsToCheck, 'A1VC38T7YXB528', userId)
-    ]);
+    const marketData = await getListingMarketData(userId, asinsToCheck);
 
     for (const listing of usListings) {
-      const jpPriceInfo = jpPricing[listing.asin];
+      const asin = String(listing.asin).trim().toUpperCase();
+      const jpPriceInfo = marketData.jpPricing[asin];
       const sellerCount = jpPriceInfo ? jpPriceInfo.sellerCount : 0;
 
       console.log(`[ユーザーID: ${userId}][在庫チェック] SKU: ${listing.sku}, 日本での出品者数: ${sellerCount}`);
@@ -80,17 +83,15 @@ async function checkInventoryForUser(userId) {
         continue; 
       }
 
-      const usPriceInfo = usPricing[listing.asin];
+      const usPriceInfo = marketData.usPricing[asin];
       if (!usPriceInfo || !usPriceInfo.price || !jpPriceInfo || !jpPriceInfo.price) {
           console.log(`[ユーザーID: ${userId}][利益チェック] SKU: ${listing.sku} の価格情報が不足しているためスキップします。`);
           continue;
       }
       
-      const tempProduct = { asin: listing.asin, usPrice: usPriceInfo.price, jpPrice: jpPriceInfo.price };
-      const profitResult = calculateProfit(tempProduct, settings);
-      const exclusionInfo = isExcluded(tempProduct, settings, profitResult);
+      const { exclusionInfo } = evaluateListingProfitability(asin, settings, marketData);
 
-      if (exclusionInfo.excluded) {
+      if (exclusionInfo?.excluded) {
         console.log(`[ユーザーID: ${userId}][出品取下] SKU: ${listing.sku} が利益基準を満たさなくなりました。理由: ${exclusionInfo.reason}。出品を削除します。`);
         try {
           await deleteListingsItem(listing.sku, listing.marketplaceId, userId);
