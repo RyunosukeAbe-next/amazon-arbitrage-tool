@@ -4,11 +4,12 @@ const FRANKFURTER_API_BASE = 'https://api.frankfurter.dev';
 const DEFAULT_REFRESH_INTERVAL_MINUTES = 360;
 
 async function fetchUsdToJpyRate() {
-  const response = await axios.get(`${FRANKFURTER_API_BASE}/v2/rate/USD/JPY`, {
+  // Use the correct endpoint for v2
+  const response = await axios.get(`${FRANKFURTER_API_BASE}/v2/latest?base=USD&symbols=JPY`, {
     timeout: 10000,
   });
 
-  const rate = Number(response.data?.rate);
+  const rate = Number(response.data?.rates?.JPY);
   if (!Number.isFinite(rate) || rate <= 0) {
     throw new Error('為替レートAPIから有効なUSD/JPYレートを取得できませんでした。');
   }
