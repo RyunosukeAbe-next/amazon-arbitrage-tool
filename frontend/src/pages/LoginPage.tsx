@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useNavigate, Link as RouterLink } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import api from '../services/api';
 import {
@@ -9,8 +9,7 @@ import {
   TextField,
   Button,
   Alert,
-  CircularProgress,
-  Link
+  CircularProgress
 } from '@mui/material';
 
 const LoginPage: React.FC = () => {
@@ -94,9 +93,6 @@ const LoginPage: React.FC = () => {
           >
             {loading ? <CircularProgress size={24} /> : 'ログイン'}
           </Button>
-          <Link component={RouterLink} to="/register" variant="body2">
-            アカウントをお持ちでないですか？ 新規登録
-          </Link>
         </Box>
       </Box>
     </Container>

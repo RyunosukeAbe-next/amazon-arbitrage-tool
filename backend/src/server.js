@@ -140,10 +140,9 @@ app.get('/api/amazon/callback', async (req, res) => {
         return res.status(400).json({ error: '認証コードがありません。' });
     }
 
-    // 本番環境（Render等）ではドメインを維持したままフロントエンドのルートへリダイレクト
-    // ローカル環境では localhost:3000 へリダイレクト
+    // 本番環境では環境変数 FRONTEND_URL を優先、なければデフォルト値を使用
     const frontendRedirectUrl = process.env.NODE_ENV === 'production' 
-        ? 'https://amazon-arbitrage-tool-1.onrender.com' 
+        ? (process.env.FRONTEND_URL || 'https://amazon-arbitrage-tool-1.onrender.com') 
         : 'http://localhost:3000';
 
     res.redirect(`${frontendRedirectUrl}/amazon/callback?code=${authCode}&state=${state}&selling_partner_id=${selling_partner_id || ''}`);
