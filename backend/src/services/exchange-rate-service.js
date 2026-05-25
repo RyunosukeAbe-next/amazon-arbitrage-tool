@@ -1,25 +1,35 @@
 const axios = require('axios');
 
-const FRANKFURTER_API_BASE = 'https://api.frankfurter.dev';
+const FRANKFURTER_API_BASE = 'https://api.frankfurter.app';
 const DEFAULT_REFRESH_INTERVAL_MINUTES = 360;
 
 async function fetchUsdToJpyRate() {
-  // Use the correct endpoint for v2
-  const response = await axios.get(`${FRANKFURTER_API_BASE}/v2/latest?base=USD&symbols=JPY`, {
-    timeout: 10000,
-  });
+  try {
+    // 標準的な /latest エンドポイントを使用
+    const response = await axios.get(`${FRANKFURTER_API_BASE}/latest?base=USD&symbols=JPY`, {
+      timeout: 10000,
+    });
 
-  const rate = Number(response.data?.rates?.JPY);
-  if (!Number.isFinite(rate) || rate <= 0) {
-    throw new Error('為替レートAPIから有効なUSD/JPYレートを取得できませんでした。');
+    const rate = Number(response.data?.rates?.JPY);
+    if (!Number.isFinite(rate) || rate <= 0) {
+      console.error('[fetchUsdToJpyRate] Invalid rate received:', response.data);
+      throw new Error('為替レートAPIから有効なUSD/JPYレートを取得できませんでした。');
+    }
+
+    return {
+      rate,
+      date: response.data?.date || null,
+      source: 'Frankfurter',
+      fetchedAt: new Date().toISOString(),
+    };
+  } catch (error) {
+    if (error.response) {
+      console.error(`[fetchUsdToJpyRate] API Error: ${error.response.status} - ${JSON.stringify(error.response.data)}`);
+    } else {
+      console.error(`[fetchUsdToJpyRate] Request Error: ${error.message}`);
+    }
+    throw error;
   }
-
-  return {
-    rate,
-    date: response.data?.date || null,
-    source: 'Frankfurter',
-    fetchedAt: new Date().toISOString(),
-  };
 }
 
 function shouldRefreshExchangeRate(settings, now = new Date()) {

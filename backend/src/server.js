@@ -346,18 +346,25 @@ apiRouter.post('/settings', async (req, res) => {
 
 apiRouter.post('/settings/exchange-rate/refresh', async (req, res) => {
   try {
+    console.log(`[ExchangeRateRefresh] Starting refresh for user: ${req.user.userId}`);
     const settings = await loadSettings(req.user.userId);
+    console.log(`[ExchangeRateRefresh] Current settings loaded.`);
+    
     const updatedSettings = await applyLatestExchangeRate({
       ...settings,
       autoExchangeRateEnabled: true,
     });
+    console.log(`[ExchangeRateRefresh] Latest exchange rate applied successfully.`);
+    
     await saveSettings(req.user.userId, updatedSettings);
+    console.log(`[ExchangeRateRefresh] Updated settings saved to database.`);
+    
     res.json({
       message: '為替レートを更新しました。',
       settings: updatedSettings,
     });
   } catch (error) {
-    console.error(`[User ${req.user.userId}] 為替レート更新中にエラー:`, error);
+    console.error(`[ExchangeRateRefresh Error] User ${req.user.userId}:`, error);
     res.status(500).json({ error: error.message || '為替レートの更新に失敗しました。' });
   }
 });
