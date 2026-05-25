@@ -141,13 +141,19 @@ app.get('/api/amazon/callback', async (req, res) => {
     }
 
     // 本番環境では環境変数 FRONTEND_URL を優先、なければデフォルト値を使用
-    const frontendBaseUrl = process.env.NODE_ENV === 'production' 
+    const rawFrontendUrl = process.env.NODE_ENV === 'production' 
         ? (process.env.FRONTEND_URL || 'https://amazon-arbitrage-tool-1.onrender.com') 
         : 'http://localhost:3000';
 
-    // /api が付かないように正規化してリダイレクト
-    const redirectUrl = `${frontendBaseUrl.replace(/\/api$/, '')}/amazon/callback?code=${authCode}&state=${state}&selling_partner_id=${selling_partner_id || ''}`;
+    // 末尾の /api や / を確実に削除してフロントエンドのベースURLを作る
+    const frontendBaseUrl = rawFrontendUrl.replace(/\/api\/?$/, '').replace(/\/$/, '');
+
+    // /amazon/callback への絶対パスを生成
+    const redirectUrl = `${frontendBaseUrl}/amazon/callback?code=${authCode}&state=${state}&selling_partner_id=${selling_partner_id || ''}`;
+    
+    console.log(`[Amazon Callback] Raw Frontend URL: ${rawFrontendUrl}`);
     console.log(`[Amazon Callback] Redirecting to: ${redirectUrl}`);
+    
     res.redirect(redirectUrl);
 });
 
