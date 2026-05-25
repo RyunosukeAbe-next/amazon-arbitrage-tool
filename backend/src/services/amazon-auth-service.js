@@ -2,7 +2,7 @@ const axios = require('axios');
 const path = require('path');
 const fs = require('fs/promises');
 const crypto = require('crypto');
-const { readJsonFile, writeJsonFileAtomic } = require('./json-file-store');
+const { readJsonFile, updateJsonFile, writeJsonFileAtomic } = require('./json-file-store');
 const { isDatabaseEnabled, query } = require('./database');
 
 // Renderの永続ディスクに対応するため、DATA_DIR環境変数を参照
@@ -94,7 +94,7 @@ async function createUserOAuthState(userId, marketplaceId = 'ATVPDKIKX0DER') {
     const issuedAt = new Date();
     const stateData = {
         state,
-        marketplaceId, // マーケットプレイスを紐付け
+        marketplaceId,
         issuedAt: issuedAt.toISOString(),
         expiresAt: new Date(issuedAt.getTime() + OAUTH_STATE_TTL_MS).toISOString(),
     };
@@ -116,6 +116,21 @@ async function createUserOAuthState(userId, marketplaceId = 'ATVPDKIKX0DER') {
     return state;
 }
 
+async function deleteUserOAuthState(userId) {
+    if (isDatabaseEnabled()) {
+        await query('DELETE FROM amazon_oauth_states WHERE user_id = $1', [userId]);
+        return;
+    }
+
+    try {
+        await fs.unlink(getUserOAuthStateFilePath(userId));
+    } catch (error) {
+        if (error.code !== 'ENOENT') {
+            throw error;
+        }
+    }
+}
+
 async function verifyAndConsumeUserOAuthState(userId, receivedState) {
     if (!receivedState) {
         throw new Error('Amazon認証stateがありません。再度連携を開始してください。');
@@ -133,7 +148,6 @@ async function verifyAndConsumeUserOAuthState(userId, receivedState) {
                 error.code = 'ENOENT';
                 throw error;
             }
-            // 互換性のため、JSONパースを試みる
             try {
                 stateData = JSON.parse(result.rows[0].state);
             } catch (e) {
@@ -160,7 +174,7 @@ async function verifyAndConsumeUserOAuthState(userId, receivedState) {
     }
 
     await deleteUserOAuthState(userId);
-    return stateData; // marketplaceId などが含まれるオブジェクトを返す
+    return stateData;
 }
 
 /**
@@ -177,20 +191,14 @@ function getAuthorizationUrl(state, marketplaceId = 'ATVPDKIKX0DER') {
         throw new Error('システム設定エラー: SELLING_PARTNER_APP_ID が設定されていません。管理者に連絡してください。');
     }
 
-    // 日本 (A1VC38T7YXB528) の場合は .co.jp ドメインを使用
     const isJP = marketplaceId === 'A1VC38T7YXB528';
     const domain = isJP ? 'sellercentral.amazon.co.jp' : 'sellercentral.amazon.com';
 
-    console.log(`[Amazon Auth] Using Franchise-ready authorization flow for ${marketplaceId} with App ID: ${appId} on domain: ${domain}`);
+    console.log(`[Amazon Auth] Using Franchise-ready authorization flow for ${marketplaceId} on domain: ${domain}`);
     
     return `https://${domain}/apps/authorize/consent?application_id=${appId}&state=${state}&version=beta`;
 }
 
-/**
- * 認証コードをリフレッシュトークンとアクセストークンに交換する
- * @param {string} code - Amazonから返された認証コード
- * @returns {Promise<object>} トークン情報 { refreshToken, accessToken, expiresIn }
- */
 async function exchangeCodeForTokens(code) {
     const clientId = process.env.AMAZON_CLIENT_ID || process.env.SELLING_PARTNER_APP_CLIENT_ID;
     const clientSecret = process.env.AMAZON_CLIENT_SECRET || process.env.SELLING_PARTNER_APP_CLIENT_SECRET;
@@ -201,16 +209,10 @@ async function exchangeCodeForTokens(code) {
                             : 'http://localhost:3001/api/amazon/callback');
 
     if (!clientId || !clientSecret || !redirectUri) {
-        console.error('[Amazon Auth] Missing credentials for exchange:', { 
-            hasClientId: !!clientId, 
-            hasClientSecret: !!clientSecret, 
-            hasRedirectUri: !!redirectUri 
-        });
         throw new Error('Amazon API認証情報が完全に設定されていません。環境変数を確認してください。');
     }
 
     const tokenUrl = 'https://api.amazon.com/auth/o2/token';
-
     const params = new URLSearchParams();
     params.append('grant_type', 'authorization_code');
     params.append('code', code);
@@ -220,9 +222,7 @@ async function exchangeCodeForTokens(code) {
 
     try {
         const response = await axios.post(tokenUrl, params, {
-            headers: {
-                'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
-            },
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
         });
 
         return {
@@ -237,11 +237,6 @@ async function exchangeCodeForTokens(code) {
     }
 }
 
-/**
- * リフレッシュトークンを使用してアクセストークンを更新する
- * @param {string} refreshToken
- * @returns {Promise<object>} 新しいアクセストークン情報 { accessToken, expiresIn, issuedAt }
- */
 async function refreshAccessToken(refreshToken) {
     const clientId = process.env.AMAZON_CLIENT_ID || process.env.SELLING_PARTNER_APP_CLIENT_ID;
     const clientSecret = process.env.AMAZON_CLIENT_SECRET || process.env.SELLING_PARTNER_APP_CLIENT_SECRET;
@@ -251,7 +246,6 @@ async function refreshAccessToken(refreshToken) {
     }
 
     const tokenUrl = 'https://api.amazon.com/auth/o2/token';
-
     const params = new URLSearchParams();
     params.append('grant_type', 'refresh_token');
     params.append('refresh_token', refreshToken);
@@ -260,9 +254,7 @@ async function refreshAccessToken(refreshToken) {
 
     try {
         const response = await axios.post(tokenUrl, params, {
-            headers: {
-                'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
-            },
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
         });
 
         return {
