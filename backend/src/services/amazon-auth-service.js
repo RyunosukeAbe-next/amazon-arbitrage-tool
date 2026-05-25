@@ -178,18 +178,16 @@ async function verifyAndConsumeUserOAuthState(userId, receivedState) {
  * @returns {string} 認証URL
  */
 function getAuthorizationUrl(state) {
-    const clientId = process.env.AMAZON_CLIENT_ID || process.env.SELLING_PARTNER_APP_CLIENT_ID;
-    // リダイレクトURIの自動構成
-    const redirectUri = process.env.AMAZON_REDIRECT_URI || 
-                        (process.env.NODE_ENV === 'production' 
-                            ? 'https://amazon-arbitrage-tool-1.onrender.com/api/amazon/callback' 
-                            : 'http://localhost:3001/api/amazon/callback');
-
-    if (!clientId || !redirectUri) {
-        throw new Error('AMAZON_CLIENT_IDまたはAMAZON_REDIRECT_URIが設定されていません。');
+    const appId = process.env.AMAZON_APP_ID || process.env.SELLING_PARTNER_APP_ID;
+    
+    if (!appId) {
+        console.error('[Amazon Auth] SELLING_PARTNER_APP_ID is missing.');
+        throw new Error('システム設定エラー: SELLING_PARTNER_APP_ID が設定されていません。管理者に連絡してください。');
     }
-    // LWA (Login with Amazon) のエンドポイント
-    return `https://www.amazon.com/ap/oa?client_id=${clientId}&scope=sellingpartnerapi::notifications&response_type=code&redirect_uri=${redirectUri}&state=${state}&version=beta`;
+
+    console.log(`[Amazon Auth] Using Franchise-ready authorization flow with App ID: ${appId}`);
+    // Seller Central の正式な承認画面へ誘導（これによりリダイレクト時に selling_partner_id が確実に渡る）
+    return `https://sellercentral.amazon.com/apps/authorize/consent?application_id=${appId}&state=${state}&version=beta`;
 }
 
 /**
