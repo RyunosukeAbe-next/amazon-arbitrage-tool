@@ -96,14 +96,16 @@ authRouter.post('/amazon/save-auth', async (req, res) => {
     try {
         const user = jwt.verify(token, process.env.JWT_SECRET);
         const userId = user.userId;
-        const { code, spapi_oauth_code, state, selling_partner_id, marketplaceId = US_MARKETPLACE_ID } = req.body;
+        const { code, spapi_oauth_code, state, selling_partner_id } = req.body;
         const authCode = code || spapi_oauth_code;
 
         if (!authCode) {
             return res.status(400).json({ error: '認証コードがありません。' });
         }
 
-        await amazonAuthService.verifyAndConsumeUserOAuthState(userId, state);
+        // state からマーケットプレイス情報を復元
+        const stateData = await amazonAuthService.verifyAndConsumeUserOAuthState(userId, state);
+        const marketplaceId = stateData.marketplaceId || US_MARKETPLACE_ID;
 
         console.log(`[User ${userId}] Exchanging code for tokens for ${marketplaceId}...`);
         const tokens = await amazonAuthService.exchangeCodeForTokens(authCode);
@@ -130,7 +132,11 @@ authRouter.post('/amazon/save-auth', async (req, res) => {
         console.log(`[User ${userId}] Amazon連携成功 (${marketplaceId}). ID: ${spId}`);
         res.status(200).json({ message: 'Amazonアカウントとの連携に成功しました。' });
     } catch (error) {
-        // ... (省略)
+        console.error('Amazon認証情報の保存中にエラー:', error);
+        if (error.name === 'JsonWebTokenError' || error.name === 'TokenExpiredError') {
+             return res.status(403).json({ error: '無効なトークンです。再度ログインしてください。' });
+        }
+        res.status(500).json({ error: error.message || 'Amazonアカウントとの連携に失敗しました。' });
     }
 });
 
@@ -138,8 +144,8 @@ app.use('/api/auth', authRouter);
 
 // Amazonからのリダイレクトを直接受け取るエンドポイント (認証なし) ---
 app.get('/api/amazon/callback', async (req, res) => {
-    const { code, spapi_oauth_code, state, selling_partner_id, mkt_id } = req.query;
-    console.log(`[Amazon Callback] Received callback with code and state. MktId: ${mkt_id}`);
+    const { code, spapi_oauth_code, state, selling_partner_id } = req.query;
+    console.log(`[Amazon Callback] Received callback with code and state.`);
 
     const authCode = code || spapi_oauth_code;
 
@@ -153,9 +159,10 @@ app.get('/api/amazon/callback', async (req, res) => {
 
     const frontendBaseUrl = rawFrontendUrl.replace(/\/api\/?$/, '').replace(/\/$/, '');
 
-    // marketplaceId もクエリパラメータに含める (Amazonが mkt_id を返さない場合に備え、stateから復元するロジックが必要になるかもしれませんが、まずはシンプルに)
-    const redirectUrl = `${frontendBaseUrl}/amazon/callback?code=${authCode}&state=${state}&selling_partner_id=${selling_partner_id || ''}&marketplaceId=${mkt_id || ''}`;
+    // marketplaceId は state から復元するため、ここでは引き回さなくて良い（セキュリティ上も望ましい）
+    const redirectUrl = `${frontendBaseUrl}/amazon/callback?code=${authCode}&state=${state}&selling_partner_id=${selling_partner_id || ''}`;
     
+    console.log(`[Amazon Callback] Redirecting to: ${redirectUrl}`);
     res.redirect(redirectUrl);
 });
 
@@ -167,7 +174,8 @@ apiRouter.use(authenticate);
 apiRouter.get('/amazon/authorize', async (req, res) => {
     try {
         const { marketplaceId = US_MARKETPLACE_ID } = req.query;
-        const state = await amazonAuthService.createUserOAuthState(req.user.userId);
+        // marketplaceId を紐付けて state を作成
+        const state = await amazonAuthService.createUserOAuthState(req.user.userId, marketplaceId);
         console.log(`[User ${req.user.userId}] Generating Amazon Authorization URL for ${marketplaceId} with state: ${state}`);
         const authUrl = amazonAuthService.getAuthorizationUrl(state);
         res.json({ authorizationUrl: authUrl, state: state });
@@ -287,7 +295,7 @@ async function runProductSearch(userId, params, options = {}) {
         usPrice: usPriceInfo.price, 
         jpPrice: jpPriceInfo.price, 
         usSellerCount: usPriceInfo.sellerCount,
-        jpSellerCount: jpPriceInfo.sellerCount, // 日本の出品者数を追加
+        jpSellerCount: jpPriceInfo.sellerCount, 
         ...productAttributes 
       };
       const profitResult = calculateProfit(combinedProduct, settings);
@@ -442,23 +450,20 @@ apiRouter.post('/listing', async (req, res) => {
             skuToUse = `AUTO-${Date.now()}-${asin}`;
         }
 
-        // 日本側の最新情報を取得してリードタイムを計算
         const jpPricing = await getCompetitivePricingForAsins([asin], JP_MARKETPLACE_ID, userId);
         const jpInfo = jpPricing[asin] || { leadTime: 2 };
         const leadTimeBuffer = settings.leadTimeBuffer || 3;
         const calculatedLeadTime = (jpInfo.leadTime || 2) + leadTimeBuffer;
 
-        // productType と計算した leadTime を渡すように修正
         const result = await putListingsItem(asin, skuToUse, price, quantity, marketplaceId, userId, productType || 'GENERIC', calculatedLeadTime);
         
         if (result.status === 'INCOMPLETE') {
-            console.log(`[Server] SKU ${skuToUse} is incomplete on Amazon. Deleting immediately.`);
             try {
                 await deleteListingsItem(skuToUse, marketplaceId, userId);
             } catch (delError) {
                 console.error(`[Server] Failed to delete incomplete SKU ${skuToUse}:`, delError.message);
             }
-            return res.status(400).json({ error: 'Amazonのカタログ情報が不足しているため、出品できませんでした。この商品は自動的に除外されました。' });
+            return res.status(400).json({ error: 'Amazonのカタログ情報が不足しているため、出品できませんでした。' });
         }
 
         await listingManager.addTrackedListing(userId, skuToUse, asin, marketplaceId, quantity, price, productType || 'GENERIC');
@@ -483,10 +488,7 @@ apiRouter.post('/bulk-listing-from-asins', async (req, res) => {
     const { asins, title } = req.body;
     const userId = req.user.userId;
     const marketplaceId = US_MARKETPLACE_ID;
-
     let isCancelled = false;
-    // 意図しない切断で一括出品が強制終了されるのを防ぐため、キャンセル処理をコメントアウト
-    // req.on('close', () => { isCancelled = true; });
 
     if (!asins || asins.length === 0) return res.status(400).json({ error: 'ASINリストは必須です。' });
 
@@ -496,17 +498,8 @@ apiRouter.post('/bulk-listing-from-asins', async (req, res) => {
     try {
         logMeta = await listingLogger.createListingLog(userId, title || '一括出品', asins.length);
         const settings = await loadSettings(userId);
-        await listingLogger.updateListingLog(userId, logMeta.id, {
-            processedAsinCount: 0,
-            summary: '商品情報を取得しています...'
-        });
         const allProducts = await getCatalogItemsByAsins(asins, US_MARKETPLACE_ID, userId, () => isCancelled);
         const pricingAsins = allProducts.map(p => p.asin);
-        await listingLogger.updateListingLog(userId, logMeta.id, {
-            processedAsinCount: 0,
-            resolvedAsinCount: pricingAsins.length,
-            summary: `${pricingAsins.length}件の商品情報を取得しました。価格と属性を取得しています...`
-        });
         const [usPricing, jpPricing, attributes] = await Promise.all([
             getCompetitivePricingForAsins(pricingAsins, US_MARKETPLACE_ID, userId, () => isCancelled),
             getCompetitivePricingForAsins(pricingAsins, JP_MARKETPLACE_ID, userId, () => isCancelled),
@@ -521,20 +514,7 @@ apiRouter.post('/bulk-listing-from-asins', async (req, res) => {
             processedCount++;
             const existingListing = await listingManager.getTrackedListingByAsin(userId, product.asin);
             if (existingListing) {
-                detailLogs.push({
-                    asin: product.asin,
-                    sku: existingListing.sku,
-                    status: 'skipped',
-                    reason: '既に出品管理中のASINです。'
-                });
-                if (processedCount % 5 === 0 || processedCount === allProducts.length) {
-                    await listingLogger.updateListingLog(userId, logMeta.id, {
-                        processedAsinCount: processedCount,
-                        listedProductCount: listedCount,
-                        currentAsin: product.asin,
-                        summary: `${processedCount}/${allProducts.length}件を処理しました。`
-                    });
-                }
+                detailLogs.push({ asin: product.asin, status: 'skipped', reason: '既に出品管理中のASINです。' });
                 continue;
             }
 
@@ -542,44 +522,20 @@ apiRouter.post('/bulk-listing-from-asins', async (req, res) => {
             const jpPriceInfo = jpPricing[product.asin];
             if (!usPriceInfo || !jpPriceInfo) {
                 detailLogs.push({ asin: product.asin, status: 'skipped', reason: '価格不足' });
-                if (processedCount % 5 === 0 || processedCount === allProducts.length) {
-                    await listingLogger.updateListingLog(userId, logMeta.id, {
-                        processedAsinCount: processedCount,
-                        listedProductCount: listedCount,
-                        currentAsin: product.asin,
-                        summary: `${processedCount}/${allProducts.length}件を処理しました。`
-                    });
-                }
                 continue;
             }
             const productAttributes = attributes[product.asin] || {};
-            const combinedProduct = {
-                ...product,
-                ...productAttributes,
-                usPrice: usPriceInfo.price,
-                jpPrice: jpPriceInfo.price
-            };
+            const combinedProduct = { ...product, ...productAttributes, usPrice: usPriceInfo.price, jpPrice: jpPriceInfo.price };
             const profitResult = calculateProfit(combinedProduct, settings);
             const exclusionInfo = isExcluded(combinedProduct, settings, profitResult);
 
             if (exclusionInfo.excluded) {
                 detailLogs.push({ asin: product.asin, status: 'skipped', reason: exclusionInfo.reason });
-                if (processedCount % 5 === 0 || processedCount === allProducts.length) {
-                    await listingLogger.updateListingLog(userId, logMeta.id, {
-                        processedAsinCount: processedCount,
-                        listedProductCount: listedCount,
-                        currentAsin: product.asin,
-                        summary: `${processedCount}/${allProducts.length}件を処理しました。`
-                    });
-                }
                 continue;
             }
             let skuToUse = `AUTO-${Date.now()}-${product.asin}`;
             try {
-                // 正しい productType と 日本の出品者数を数量として渡すように修正
                 const quantityToUse = jpPriceInfo.sellerCount > 0 ? jpPriceInfo.sellerCount : 1;
-                
-                // リードタイムの計算: 日本のリードタイム(デフォルト2) + 設定されたバッファ(n値)
                 const leadTimeBuffer = settings.leadTimeBuffer || 3;
                 const calculatedLeadTime = (jpPriceInfo.leadTime || 2) + leadTimeBuffer;
 
@@ -590,20 +546,12 @@ apiRouter.post('/bulk-listing-from-asins', async (req, res) => {
             } catch(e) {
                 detailLogs.push({ asin: product.asin, status: 'error', reason: e.message });
             }
-            if (processedCount % 5 === 0 || processedCount === allProducts.length) {
-                await listingLogger.updateListingLog(userId, logMeta.id, {
-                    processedAsinCount: processedCount,
-                    listedProductCount: listedCount,
-                    currentAsin: product.asin,
-                    summary: `${processedCount}/${allProducts.length}件を処理しました。`
-                });
-            }
         }
         await listingLogger.updateListingLog(userId, logMeta.id, {
             status: isCancelled ? 'cancelled' : 'completed',
             processedAsinCount: processedCount,
             listedProductCount: listedCount,
-            summary: isCancelled ? `${processedCount}/${allProducts.length}件でキャンセルされました。` : `${processedCount}/${allProducts.length}件を処理し、${listedCount}件を出品しました。`,
+            summary: `${processedCount}件処理し、${listedCount}件出品しました。`,
             details: detailLogs
         });
     } catch (error) {
@@ -620,17 +568,6 @@ apiRouter.get('/listing-logs', async (req, res) => {
     }
 });
 
-apiRouter.delete('/listing-logs/:logId', async (req, res) => {
-    try {
-        await listingLogger.deleteListingLog(req.user.userId, req.params.logId);
-        res.json({ message: '出品ログを削除しました。' });
-    } catch (error) {
-        const isNotFound = error.message && error.message.includes('見つかりません');
-        const statusCode = isNotFound ? 404 : 400;
-        res.status(statusCode).json({ error: error.message || '出品ログの削除に失敗しました。' });
-    }
-});
-
 apiRouter.get('/research-logs', async (req, res) => {
     try {
         const logs = await researchLogger.getResearchLogs(req.user.userId);
@@ -642,28 +579,11 @@ apiRouter.get('/research-logs', async (req, res) => {
 
 apiRouter.get('/research-logs/:logId', async (req, res) => {
     try {
-        const { limit, offset } = req.query;
-        const options = limit !== undefined || offset !== undefined ? { limit, offset } : {};
-        const details = await researchLogger.getResearchLogDetails(req.user.userId, req.params.logId, options);
-        if (!details) {
-            return res.status(404).json({ error: 'リサーチログが見つかりません。' });
-        }
+        const details = await researchLogger.getResearchLogDetails(req.user.userId, req.params.logId);
+        if (!details) return res.status(404).json({ error: 'リサーチログが見つかりません。' });
         res.json(details);
     } catch (error) {
         res.status(500).json({ error: 'エラー' });
-    }
-});
-
-apiRouter.delete('/research-logs/:logId', async (req, res) => {
-    try {
-        const deleted = await researchLogger.deleteResearchLog(req.user.userId, req.params.logId);
-        if (!deleted) {
-            return res.status(404).json({ error: '削除対象のリサーチログが見つかりません。' });
-        }
-        res.json({ message: 'リサーチログを削除しました。' });
-    } catch (error) {
-        console.error(`[User ${req.user.userId}] リサーチログ削除エラー:`, error);
-        res.status(500).json({ error: 'リサーチログの削除に失敗しました。' });
     }
 });
 

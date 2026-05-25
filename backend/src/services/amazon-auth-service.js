@@ -89,11 +89,12 @@ async function deleteUserAmazonAuth(userId, marketplaceId = 'ATVPDKIKX0DER') {
     }
 }
 
-async function createUserOAuthState(userId) {
+async function createUserOAuthState(userId, marketplaceId = 'ATVPDKIKX0DER') {
     const state = crypto.randomBytes(32).toString('hex');
     const issuedAt = new Date();
     const stateData = {
         state,
+        marketplaceId, // マーケットプレイスを紐付け
         issuedAt: issuedAt.toISOString(),
         expiresAt: new Date(issuedAt.getTime() + OAUTH_STATE_TTL_MS).toISOString(),
     };
@@ -106,28 +107,13 @@ async function createUserOAuthState(userId) {
                state = EXCLUDED.state,
                issued_at = EXCLUDED.issued_at,
                expires_at = EXCLUDED.expires_at`,
-            [userId, stateData.state, stateData.issuedAt, stateData.expiresAt]
+            [userId, JSON.stringify(stateData), stateData.issuedAt, stateData.expiresAt]
         );
         return state;
     }
 
     await writeJsonFileAtomic(getUserOAuthStateFilePath(userId), stateData);
     return state;
-}
-
-async function deleteUserOAuthState(userId) {
-    if (isDatabaseEnabled()) {
-        await query('DELETE FROM amazon_oauth_states WHERE user_id = $1', [userId]);
-        return;
-    }
-
-    try {
-        await fs.unlink(getUserOAuthStateFilePath(userId));
-    } catch (error) {
-        if (error.code !== 'ENOENT') {
-            throw error;
-        }
-    }
 }
 
 async function verifyAndConsumeUserOAuthState(userId, receivedState) {
@@ -142,11 +128,16 @@ async function verifyAndConsumeUserOAuthState(userId, receivedState) {
                 'SELECT state, issued_at AS "issuedAt", expires_at AS "expiresAt" FROM amazon_oauth_states WHERE user_id = $1',
                 [userId]
             );
-            stateData = result.rows[0];
-            if (!stateData) {
+            if (!result.rows[0]) {
                 const error = new Error('state not found');
                 error.code = 'ENOENT';
                 throw error;
+            }
+            // 互換性のため、JSONパースを試みる
+            try {
+                stateData = JSON.parse(result.rows[0].state);
+            } catch (e) {
+                stateData = { state: result.rows[0].state, expiresAt: result.rows[0].expiresAt };
             }
         } else {
             stateData = await readJsonFile(getUserOAuthStateFilePath(userId));
@@ -164,14 +155,12 @@ async function verifyAndConsumeUserOAuthState(userId, receivedState) {
         throw new Error('Amazon認証stateの有効期限が切れています。再度連携を開始してください。');
     }
 
-    const expected = Buffer.from(stateData.state);
-    const actual = Buffer.from(String(receivedState));
-    if (expected.length !== actual.length || !crypto.timingSafeEqual(expected, actual)) {
+    if (stateData.state !== receivedState) {
         throw new Error('Amazon認証stateが一致しません。再度連携を開始してください。');
     }
 
     await deleteUserOAuthState(userId);
-    return true;
+    return stateData; // marketplaceId などが含まれるオブジェクトを返す
 }
 
 /**

@@ -65,6 +65,16 @@ async function initDatabase() {
       PRIMARY KEY (user_id, marketplace_id)
     );
 
+    -- 既存テーブルに marketplace_id がない場合の補正
+    DO $$ 
+    BEGIN 
+      IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='amazon_auth' AND column_name='marketplace_id') THEN
+        ALTER TABLE amazon_auth ADD COLUMN marketplace_id TEXT NOT NULL DEFAULT 'ATVPDKIKX0DER';
+        ALTER TABLE amazon_auth DROP CONSTRAINT IF EXISTS amazon_auth_pkey;
+        ALTER TABLE amazon_auth ADD PRIMARY KEY (user_id, marketplace_id);
+      END IF;
+    END $$;
+
     CREATE TABLE IF NOT EXISTS amazon_oauth_states (
       user_id TEXT PRIMARY KEY,
       state TEXT NOT NULL,
