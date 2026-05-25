@@ -166,9 +166,10 @@ async function verifyAndConsumeUserOAuthState(userId, receivedState) {
 /**
  * Amazon MWS/SP-APIの認証URLを生成
  * @param {string} state - CSRF保護のためのランダムな文字列
+ * @param {string} marketplaceId - 対象のマーケットプレイスID
  * @returns {string} 認証URL
  */
-function getAuthorizationUrl(state) {
+function getAuthorizationUrl(state, marketplaceId = 'ATVPDKIKX0DER') {
     const appId = process.env.AMAZON_APP_ID || process.env.SELLING_PARTNER_APP_ID;
     
     if (!appId) {
@@ -176,9 +177,13 @@ function getAuthorizationUrl(state) {
         throw new Error('システム設定エラー: SELLING_PARTNER_APP_ID が設定されていません。管理者に連絡してください。');
     }
 
-    console.log(`[Amazon Auth] Using Franchise-ready authorization flow with App ID: ${appId}`);
-    // Seller Central の正式な承認画面へ誘導（これによりリダイレクト時に selling_partner_id が確実に渡る）
-    return `https://sellercentral.amazon.com/apps/authorize/consent?application_id=${appId}&state=${state}&version=beta`;
+    // 日本 (A1VC38T7YXB528) の場合は .co.jp ドメインを使用
+    const isJP = marketplaceId === 'A1VC38T7YXB528';
+    const domain = isJP ? 'sellercentral.amazon.co.jp' : 'sellercentral.amazon.com';
+
+    console.log(`[Amazon Auth] Using Franchise-ready authorization flow for ${marketplaceId} with App ID: ${appId} on domain: ${domain}`);
+    
+    return `https://${domain}/apps/authorize/consent?application_id=${appId}&state=${state}&version=beta`;
 }
 
 /**

@@ -177,7 +177,7 @@ apiRouter.get('/amazon/authorize', async (req, res) => {
         // marketplaceId を紐付けて state を作成
         const state = await amazonAuthService.createUserOAuthState(req.user.userId, marketplaceId);
         console.log(`[User ${req.user.userId}] Generating Amazon Authorization URL for ${marketplaceId} with state: ${state}`);
-        const authUrl = amazonAuthService.getAuthorizationUrl(state);
+        const authUrl = amazonAuthService.getAuthorizationUrl(state, marketplaceId);
         res.json({ authorizationUrl: authUrl, state: state });
     } catch (error) {
         console.error('Amazon認証URLの生成中にエラー:', error);
