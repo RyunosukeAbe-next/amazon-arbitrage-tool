@@ -10,7 +10,8 @@ function App() {
     <Router>
       <Routes>
         <Route path="/login" element={<LoginPage />} />
-        <Route path="/amazon/callback" element={<AmazonCallbackPage />} /> {/* 新しいルート */}
+        <Route path="/amazon/callback" element={<AmazonCallbackPage />} />
+        <Route path="/api/amazon/callback" element={<AmazonCallbackPage />} /> {/* 追加 */}
         <Route 
           path="/" 
           element={
