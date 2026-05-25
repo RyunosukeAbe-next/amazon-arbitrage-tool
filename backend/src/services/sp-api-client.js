@@ -88,34 +88,35 @@ function isAccessTokenExpired(authData) {
  * SP-APIクライアントを初期化し、返す
  * @param {string} marketplaceId マーケットプレイスID
  * @param {string} userId ユーザーID
+ * @param {object} options オプション (refreshTokenの直接指定など)
  * @returns {SpApi} SP-APIクライアントインスタンス
  */
-async function getSpApiClient(marketplaceId, userId) {
-    console.log(`[getSpApiClient] Initializing for User: ${userId}, Marketplace: ${marketplaceId}`);
-    const authData = await amazonAuthService.loadUserAmazonAuth(userId);
+async function getSpApiClient(marketplaceId, userId, options = {}) {
+    const { refreshToken: manualRefreshToken, skipSellerIdCheck = false } = options;
     
-    if (!authData) {
-        console.error(`[getSpApiClient] No auth data found in database for User: ${userId}`);
-        throw new Error(`User ${userId} has not linked their Amazon account or missing required auth data.`);
+    let authData = null;
+    if (!manualRefreshToken) {
+        authData = await amazonAuthService.loadUserAmazonAuth(userId);
+        if (!authData) {
+            throw new Error(`User ${userId} has not linked their Amazon account.`);
+        }
     }
 
-    if (!authData.refreshToken || !authData.sellingPartnerId) {
-        console.error(`[getSpApiClient] Auth data is incomplete for User: ${userId}:`, {
-            hasRefreshToken: !!authData.refreshToken,
-            hasSellingPartnerId: !!authData.sellingPartnerId
-        });
-        throw new Error(`User ${userId} has not linked their Amazon account or missing required auth data.`);
+    const refreshToken = manualRefreshToken || authData.refreshToken;
+    const sellingPartnerId = authData?.sellingPartnerId;
+
+    if (!refreshToken) {
+        throw new Error(`User ${userId} is missing refresh token.`);
+    }
+
+    if (!skipSellerIdCheck && !sellingPartnerId) {
+        throw new Error(`User ${userId} is missing selling partner ID.`);
     }
 
     // 日本 (A1VC38T7YXB528) は 'fe' (Far East), 米国 (ATVPDKIKX0DER) は 'na' (North America)
     const isJP = marketplaceId === 'A1VC38T7YXB528';
     const spApiRegion = isJP ? 'fe' : 'na';
     
-    // 日本用の場合は .env の SPAPI_REFRESH_TOKEN_JP があればそれを最優先、無ければDB保存分
-    const refreshTokenToUse = isJP && process.env.SPAPI_REFRESH_TOKEN_JP 
-        ? process.env.SPAPI_REFRESH_TOKEN_JP 
-        : authData.refreshToken;
-
     const spApiConfig = {
         region: spApiRegion,
         credentials: {
@@ -125,23 +126,51 @@ async function getSpApiClient(marketplaceId, userId) {
             AWS_SECRET_ACCESS_KEY: process.env.SPAPI_AWS_SECRET_ACCESS_KEY,
             AWS_SELLING_PARTNER_ROLE: process.env.SPAPI_ROLE_ARN,
         },
-        refresh_token: refreshTokenToUse, 
-        // access_token を渡さないことで、ライブラリが指定されたリージョン用のトークンを自動取得・リフレッシュする
+        refresh_token: refreshToken,
     };
 
-    // 日本リージョンの場合はエンドポイントを明示
     if (isJP) {
         spApiConfig.endpoint = 'https://sellingpartnerapi-fe.amazon.com';
     }
 
-    if (!spApiConfig.refresh_token || !spApiConfig.credentials.AWS_ACCESS_KEY_ID || !spApiConfig.credentials.SELLING_PARTNER_APP_CLIENT_ID) {
-        throw new Error(`SP-APIの認証情報が不足しています（リージョン: ${spApiRegion}）。`);
-    }
-
     return {
         client: new SpApi(spApiConfig),
-        sellingPartnerId: authData.sellingPartnerId
+        sellingPartnerId: sellingPartnerId
     };
+}
+
+/**
+ * リフレッシュトークンを使用して Amazon からセラーID (Merchant ID) を取得する
+ */
+async function getSellerId(userId, refreshToken) {
+    console.log(`[getSellerId] Attempting to fetch Seller ID from Amazon API for User: ${userId}`);
+    
+    // 米国リージョンを使用して Sellers API を叩く (Sellers API はリージョン間で共通の情報が取れる)
+    const { client: spApiClient } = await getSpApiClient('ATVPDKIKX0DER', userId, {
+        refreshToken,
+        skipSellerIdCheck: true
+    });
+
+    try {
+        const res = await spApiClient.callAPI({
+            method: 'GET',
+            api_path: '/sellers/v1/marketplaceParticipations',
+        });
+
+        // 最初の参加情報から sellerId を取得
+        const sellerId = res.payload?.[0]?.sellerId || res[0]?.sellerId;
+        
+        if (!sellerId) {
+            console.error('[getSellerId] API response did not contain sellerId:', JSON.stringify(res));
+            return null;
+        }
+
+        console.log(`[getSellerId] Successfully resolved Seller ID: ${sellerId}`);
+        return sellerId;
+    } catch (error) {
+        console.error('[getSellerId] Failed to fetch marketplace participations:', error.response?.data || error.message);
+        return null;
+    }
 }
 
 /**
@@ -804,6 +833,7 @@ async function getProductAttributesForAsins(asins, marketplaceId, userId, isCanc
 
 
 module.exports = {
+    getSellerId,
     searchProductsByKeywords,
     getCompetitivePricingForAsins,
     getCatalogItemAttributes,

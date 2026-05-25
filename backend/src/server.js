@@ -8,7 +8,7 @@ const cors = require('cors');
 const jwt = require('jsonwebtoken');
 
 // サービスとミドルウェアの読み込み
-const { searchProductsByKeywords, getCompetitivePricingForAsins, getCatalogItemsByAsins, putListingsItem, deleteListingsItem, getProductAttributesForAsins } = require('./services/sp-api-client');
+const { getSellerId, searchProductsByKeywords, getCompetitivePricingForAsins, getCatalogItemsByAsins, putListingsItem, deleteListingsItem, getProductAttributesForAsins } = require('./services/sp-api-client');
 const { json2csv } = require('json-2-csv');
 const { loadSettings, saveSettings } = require('./services/settings-manager');
 const { calculateProfit, isExcluded } = require('./services/profit-calculator');
@@ -109,11 +109,15 @@ authRouter.post('/amazon/save-auth', async (req, res) => {
         const tokens = await amazonAuthService.exchangeCodeForTokens(authCode);
         
         // selling_partner_id がリクエストにない場合、Amazonのレスポンス(tokens)に含まれている可能性を確認
-        const spId = selling_partner_id || tokens.sellingPartnerId;
+        let spId = selling_partner_id || tokens.sellingPartnerId;
 
         if (!spId) {
-            console.error(`[User ${userId}] selling_partner_id is missing in both request and Amazon response.`);
-            // もしここでも取れない場合、SP-APIを叩いて取得を試みる（さらに念入りな対策）
+            console.log(`[User ${userId}] selling_partner_id is missing. Attempting to fetch via SP-API Sellers API...`);
+            spId = await getSellerId(userId, tokens.refreshToken);
+        }
+
+        if (!spId) {
+            console.error(`[User ${userId}] Failed to resolve selling_partner_id from request, token response, and API.`);
         }
 
         await amazonAuthService.saveUserAmazonAuth(userId, {
