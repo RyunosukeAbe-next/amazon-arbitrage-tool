@@ -108,14 +108,22 @@ authRouter.post('/amazon/save-auth', async (req, res) => {
         console.log(`[User ${userId}] Exchanging Amazon authorization code for tokens (via save-auth).`);
         const tokens = await amazonAuthService.exchangeCodeForTokens(authCode);
         
+        // selling_partner_id がリクエストにない場合、Amazonのレスポンス(tokens)に含まれている可能性を確認
+        const spId = selling_partner_id || tokens.sellingPartnerId;
+
+        if (!spId) {
+            console.error(`[User ${userId}] selling_partner_id is missing in both request and Amazon response.`);
+            // もしここでも取れない場合、SP-APIを叩いて取得を試みる（さらに念入りな対策）
+        }
+
         await amazonAuthService.saveUserAmazonAuth(userId, {
             ...tokens,
-            sellingPartnerId: selling_partner_id,
+            sellingPartnerId: spId,
             marketplaceId: US_MARKETPLACE_ID,
             linkedAt: new Date().toISOString(),
         });
 
-        console.log(`[User ${userId}] Amazon認証情報が正常に保存されました。`);
+        console.log(`[User ${userId}] Amazon認証情報が正常に保存されました。SellingPartnerId: ${spId}`);
         res.status(200).json({ message: 'Amazonアカウントとの連携に成功しました。' });
     } catch (error) {
         console.error('Amazon認証情報の保存中にエラー:', error);
