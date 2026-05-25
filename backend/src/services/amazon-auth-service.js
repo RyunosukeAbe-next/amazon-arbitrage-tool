@@ -178,12 +178,17 @@ async function verifyAndConsumeUserOAuthState(userId, receivedState) {
  * @returns {string} 認証URL
  */
 function getAuthorizationUrl(state) {
-    const clientId = process.env.AMAZON_CLIENT_ID;
-    const redirectUri = process.env.AMAZON_REDIRECT_URI;
+    const clientId = process.env.AMAZON_CLIENT_ID || process.env.SELLING_PARTNER_APP_CLIENT_ID;
+    // リダイレクトURIの自動構成
+    const redirectUri = process.env.AMAZON_REDIRECT_URI || 
+                        (process.env.NODE_ENV === 'production' 
+                            ? 'https://amazon-arbitrage-tool-1.onrender.com/api/amazon/callback' 
+                            : 'http://localhost:3001/api/amazon/callback');
+
     if (!clientId || !redirectUri) {
         throw new Error('AMAZON_CLIENT_IDまたはAMAZON_REDIRECT_URIが設定されていません。');
     }
-    // LWA (Login with Amazon) のエンドポイントに修正
+    // LWA (Login with Amazon) のエンドポイント
     return `https://www.amazon.com/ap/oa?client_id=${clientId}&scope=sellingpartnerapi::notifications&response_type=code&redirect_uri=${redirectUri}&state=${state}&version=beta`;
 }
 
@@ -193,15 +198,24 @@ function getAuthorizationUrl(state) {
  * @returns {Promise<object>} トークン情報 { refreshToken, accessToken, expiresIn }
  */
 async function exchangeCodeForTokens(code) {
-    const clientId = process.env.AMAZON_CLIENT_ID;
-    const clientSecret = process.env.AMAZON_CLIENT_SECRET;
-    const redirectUri = process.env.AMAZON_REDIRECT_URI;
+    const clientId = process.env.AMAZON_CLIENT_ID || process.env.SELLING_PARTNER_APP_CLIENT_ID;
+    const clientSecret = process.env.AMAZON_CLIENT_SECRET || process.env.SELLING_PARTNER_APP_CLIENT_SECRET;
+    
+    const redirectUri = process.env.AMAZON_REDIRECT_URI || 
+                        (process.env.NODE_ENV === 'production' 
+                            ? 'https://amazon-arbitrage-tool-1.onrender.com/api/amazon/callback' 
+                            : 'http://localhost:3001/api/amazon/callback');
 
     if (!clientId || !clientSecret || !redirectUri) {
-        throw new Error('Amazon API認証情報が完全に設定されていません。');
+        console.error('[Amazon Auth] Missing credentials for exchange:', { 
+            hasClientId: !!clientId, 
+            hasClientSecret: !!clientSecret, 
+            hasRedirectUri: !!redirectUri 
+        });
+        throw new Error('Amazon API認証情報が完全に設定されていません。環境変数を確認してください。');
     }
 
-    const tokenUrl = 'https://api.amazon.com/auth/o2/token'; // グローバルな認証エンドポイント
+    const tokenUrl = 'https://api.amazon.com/auth/o2/token';
 
     const params = new URLSearchParams();
     params.append('grant_type', 'authorization_code');
@@ -235,8 +249,8 @@ async function exchangeCodeForTokens(code) {
  * @returns {Promise<object>} 新しいアクセストークン情報 { accessToken, expiresIn, issuedAt }
  */
 async function refreshAccessToken(refreshToken) {
-    const clientId = process.env.AMAZON_CLIENT_ID;
-    const clientSecret = process.env.AMAZON_CLIENT_SECRET;
+    const clientId = process.env.AMAZON_CLIENT_ID || process.env.SELLING_PARTNER_APP_CLIENT_ID;
+    const clientSecret = process.env.AMAZON_CLIENT_SECRET || process.env.SELLING_PARTNER_APP_CLIENT_SECRET;
 
     if (!clientId || !clientSecret || !refreshToken) {
         throw new Error('Amazon API認証情報またはリフレッシュトークンが不足しています。');
