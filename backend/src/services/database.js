@@ -58,9 +58,11 @@ async function initDatabase() {
     );
 
     CREATE TABLE IF NOT EXISTS amazon_auth (
-      user_id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      marketplace_id TEXT NOT NULL DEFAULT 'ATVPDKIKX0DER',
       data JSONB NOT NULL,
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (user_id, marketplace_id)
     );
 
     CREATE TABLE IF NOT EXISTS amazon_oauth_states (

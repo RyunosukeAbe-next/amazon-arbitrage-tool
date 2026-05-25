@@ -5,6 +5,20 @@ import { AppSettings, ProfitabilityTier, ShippingCostTier } from '../../types';
 import ProfitabilityTiersTable from './ProfitabilityTiersTable';
 import ShippingCostTiersTable from './ShippingCostTiersTable';
 
+const US_MARKETPLACE_ID = 'ATVPDKIKX0DER';
+const JP_MARKETPLACE_ID = 'A1VC38T7YXB528';
+
+interface AuthStatusDetail {
+  isLinked: boolean;
+  sellingPartnerId?: string;
+  linkedAt?: string;
+}
+
+interface AmazonAuthStatus {
+  us: AuthStatusDetail;
+  jp: AuthStatusDetail;
+}
+
 const SettingsTab: React.FC = () => {
   const [settings, setSettings] = useState<Partial<AppSettings>>({
     domesticShippingCostPerItem: 0,
@@ -32,9 +46,10 @@ const SettingsTab: React.FC = () => {
   const [error, setError] = useState('');
   const [savedMessage, setSavedMessage] = useState('');
 
-  const [isAmazonLinked, setIsAmazonLinked] = useState(false);
-  const [sellingPartnerId, setSellingPartnerId] = useState<string | null>(null);
-  const [linkedAt, setLinkedAt] = useState<string | null>(null);
+  const [authStatus, setAuthStatus] = useState<AmazonAuthStatus>({
+    us: { isLinked: false },
+    jp: { isLinked: false }
+  });
 
   useEffect(() => {
     fetchSettings();
@@ -44,9 +59,7 @@ const SettingsTab: React.FC = () => {
   const fetchAmazonAuthStatus = async () => {
     try {
       const response = await api.get('/amazon/auth-status');
-      setIsAmazonLinked(response.data.isLinked);
-      setSellingPartnerId(response.data.sellingPartnerId || null);
-      setLinkedAt(response.data.linkedAt || null);
+      setAuthStatus(response.data);
     } catch (err: any) {
       console.error('Amazon認証ステータスの取得に失敗しました。', err);
     }
@@ -141,12 +154,12 @@ const SettingsTab: React.FC = () => {
     }
   };
 
-  const handleLinkAmazon = async () => {
+  const handleLinkAmazon = async (marketplaceId: string) => {
     setLoading(true);
     setError('');
     setSavedMessage('');
     try {
-      const response = await api.get('/amazon/authorize');
+      const response = await api.get(`/amazon/authorize?marketplaceId=${marketplaceId}`);
       window.location.href = response.data.authorizationUrl;
     } catch (err: any) {
       setError(err.response?.data?.error || 'Amazon認証URLの取得に失敗しました。');
@@ -154,13 +167,14 @@ const SettingsTab: React.FC = () => {
     }
   };
 
-  const handleDisconnectAmazon = async () => {
+  const handleDisconnectAmazon = async (marketplaceId: string) => {
+    if (!window.confirm(`${marketplaceId === JP_MARKETPLACE_ID ? '日本' : '米国'}Amazonアカウントの連携を解除しますか？`)) return;
     setLoading(true);
     setError('');
     setSavedMessage('');
     try {
-      await api.delete('/amazon/disconnect');
-      setSavedMessage('Amazonアカウントの連携を解除しました。');
+      await api.delete(`/amazon/disconnect?marketplaceId=${marketplaceId}`);
+      setSavedMessage(`${marketplaceId === JP_MARKETPLACE_ID ? '日本' : '米国'}Amazonアカウントの連携を解除しました。`);
       await fetchAmazonAuthStatus();
     } catch (err: any) {
       setError(err.response?.data?.error || 'Amazonアカウントの連携解除に失敗しました。');
@@ -168,6 +182,39 @@ const SettingsTab: React.FC = () => {
       setLoading(false);
     }
   };
+
+  const renderAuthSection = (title: string, mktId: string, status: AuthStatusDetail) => (
+    <Box sx={{ p: 2, border: '1px solid #ccc', borderRadius: '4px', flex: '1 1 300px' }}>
+      <Typography variant="h6" gutterBottom>{title}</Typography>
+      {status.isLinked ? (
+        <>
+          <Alert severity="success" sx={{ mb: 1 }}>連携済み</Alert>
+          <Typography variant="body2">Seller ID: {status.sellingPartnerId}</Typography>
+          <Typography variant="body2" sx={{ mb: 2 }}>日時: {status.linkedAt ? new Date(status.linkedAt).toLocaleString() : 'N/A'}</Typography>
+          <Button 
+            variant="outlined" 
+            color="secondary" 
+            onClick={() => handleDisconnectAmazon(mktId)} 
+            disabled={loading} 
+            size="small"
+          >
+            連携解除
+          </Button>
+        </>
+      ) : (
+        <>
+          <Alert severity="warning" sx={{ mb: 2 }}>未連携</Alert>
+          <Button 
+            variant="contained" 
+            onClick={() => handleLinkAmazon(mktId)} 
+            disabled={loading}
+          >
+            {title}と連携する
+          </Button>
+        </>
+      )}
+    </Box>
+  );
 
   return (
     <>
@@ -248,42 +295,12 @@ const SettingsTab: React.FC = () => {
 
           <ProfitabilityTiersTable tiers={settings.profitabilityTiers || []} onTiersChange={handleProfitabilityTiersChange} />
 
-          <Box sx={{ mt: 3, p: 2, border: '1px solid #ccc', borderRadius: '4px' }}>
-            <Typography variant="h6" gutterBottom>Amazonアカウント連携</Typography>
-            {isAmazonLinked ? (
-              <>
-                <Alert severity="success">
-                  Amazonアカウントと連携済みです。<br />
-                  Selling Partner ID: {sellingPartnerId}<br />
-                  連携日時: {linkedAt ? new Date(linkedAt).toLocaleString() : 'N/A'}
-                </Alert>
-                <Button 
-                  variant="outlined" 
-                  color="secondary" 
-                  onClick={handleDisconnectAmazon} 
-                  disabled={loading} 
-                  sx={{ mt: 2 }}
-                >
-                  Amazonアカウント連携を解除
-                </Button>
-              </>
-            ) : (
-              <>
-                <Alert severity="warning">Amazonアカウントは連携されていません。</Alert>
-                <Button 
-                  variant="contained" 
-                  onClick={handleLinkAmazon} 
-                  disabled={loading} 
-                  sx={{ mt: 2 }}
-                >
-                  Amazonアカウントと連携する
-                </Button>
-              </>
-            )}
-            {error && <Alert severity="error" sx={{ mt: 2 }}>{error}</Alert>}
+          <Box sx={{ mt: 3, display: 'flex', gap: 2, flexWrap: 'wrap' }}>
+            {renderAuthSection("米国Amazonアカウント", US_MARKETPLACE_ID, authStatus.us)}
+            {renderAuthSection("日本Amazonアカウント", JP_MARKETPLACE_ID, authStatus.jp)}
           </Box>
           
-          <Box>
+          <Box sx={{ mt: 2 }}>
             <Button variant="contained" onClick={handleSaveSettings} disabled={loading}>設定を保存</Button>
           </Box>
           {savedMessage && <Alert severity="success" sx={{ mt: 2 }}>{savedMessage}</Alert>}

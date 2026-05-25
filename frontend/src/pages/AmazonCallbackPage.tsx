@@ -15,6 +15,7 @@ const AmazonCallbackPage: React.FC = () => {
       const code = params.get('code') || params.get('spapi_oauth_code'); // 両方のパラメータ名に対応
       const state = params.get('state');
       const sellingPartnerId = params.get('selling_partner_id'); // SP-APIからの情報
+      const marketplaceId = params.get('marketplaceId'); // カスタムパラメータ
 
       if (!code) {
         setMessage('Amazon認証情報（code）が不足しています。');
@@ -26,10 +27,11 @@ const AmazonCallbackPage: React.FC = () => {
       try {
         const token = localStorage.getItem('authToken');
         
-        // api.ts の baseURL が `/api` で終わっている場合、`/auth/...` を呼ぶと `/api/auth/...` になります。
-        // バックエンドでは `app.use('/api/auth', authRouter)` としているのでこれで正しいです。
         const response = await api.post('/auth/amazon/save-auth', { 
-          code, state, selling_partner_id: sellingPartnerId
+          code, 
+          state, 
+          selling_partner_id: sellingPartnerId,
+          marketplaceId: marketplaceId // マーケットプレイスIDを渡す
         }, {
           headers: {
             'Authorization': `Bearer ${token}`

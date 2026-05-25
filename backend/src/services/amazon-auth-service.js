@@ -25,8 +25,8 @@ function getUserAuthConfigDir(userId) {
 /**
  * ユーザーごとの認証情報ファイルのパスを取得
  */
-function getUserAuthFilePath(userId) {
-    return path.join(getUserAuthConfigDir(userId), AUTH_FILE_NAME);
+function getUserAuthFilePath(userId, marketplaceId = 'ATVPDKIKX0DER') {
+    return path.join(getUserAuthConfigDir(userId), `${marketplaceId}_${AUTH_FILE_NAME}`);
 }
 
 function getUserOAuthStateFilePath(userId) {
@@ -36,15 +36,16 @@ function getUserOAuthStateFilePath(userId) {
 /**
  * ユーザーのAmazon認証情報を読み込む
  * @param {string} userId
+ * @param {string} marketplaceId
  * @returns {Promise<object|null>}
  */
-async function loadUserAmazonAuth(userId) {
+async function loadUserAmazonAuth(userId, marketplaceId = 'ATVPDKIKX0DER') {
     if (isDatabaseEnabled()) {
-        const result = await query('SELECT data FROM amazon_auth WHERE user_id = $1', [userId]);
+        const result = await query('SELECT data FROM amazon_auth WHERE user_id = $1 AND marketplace_id = $2', [userId, marketplaceId]);
         return result.rows[0]?.data || null;
     }
 
-    const authFilePath = getUserAuthFilePath(userId);
+    const authFilePath = getUserAuthFilePath(userId, marketplaceId);
     return readJsonFile(authFilePath, null);
 }
 
@@ -54,30 +55,31 @@ async function loadUserAmazonAuth(userId) {
  * @param {object} authData
  */
 async function saveUserAmazonAuth(userId, authData) {
+    const marketplaceId = authData.marketplaceId || 'ATVPDKIKX0DER';
     if (isDatabaseEnabled()) {
         await query(
-            `INSERT INTO amazon_auth (user_id, data, updated_at)
-             VALUES ($1, $2, NOW())
-             ON CONFLICT (user_id) DO UPDATE SET
+            `INSERT INTO amazon_auth (user_id, marketplace_id, data, updated_at)
+             VALUES ($1, $2, $3, NOW())
+             ON CONFLICT (user_id, marketplace_id) DO UPDATE SET
                data = EXCLUDED.data,
                updated_at = NOW()`,
-            [userId, authData]
+            [userId, marketplaceId, authData]
         );
         return;
     }
 
-    const authFilePath = getUserAuthFilePath(userId);
+    const authFilePath = getUserAuthFilePath(userId, marketplaceId);
     await writeJsonFileAtomic(authFilePath, authData);
 }
 
-async function deleteUserAmazonAuth(userId) {
+async function deleteUserAmazonAuth(userId, marketplaceId = 'ATVPDKIKX0DER') {
     if (isDatabaseEnabled()) {
-        const result = await query('DELETE FROM amazon_auth WHERE user_id = $1', [userId]);
+        const result = await query('DELETE FROM amazon_auth WHERE user_id = $1 AND marketplace_id = $2', [userId, marketplaceId]);
         return result.rowCount > 0;
     }
 
     try {
-        await fs.unlink(getUserAuthFilePath(userId));
+        await fs.unlink(getUserAuthFilePath(userId, marketplaceId));
         return true;
     } catch (error) {
         if (error.code === 'ENOENT') {

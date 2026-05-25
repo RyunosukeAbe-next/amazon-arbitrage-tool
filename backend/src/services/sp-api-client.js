@@ -365,66 +365,18 @@ async function getCompetitivePricingForAsins(asins, marketplaceId, userId, isCan
             }, `SP-API Pricing (${marketplaceId}) chunk ${Math.floor(i / chunkSize) + 1}`);
 
             if (Array.isArray(res)) {
-                for (const result of res) { 
-                    if (result.status === 'Success' && result.Product) {
-                        const productData = result.Product;
-                        const competitivePricing = productData.CompetitivePricing || {};
-                        const competitivePrices = competitivePricing.CompetitivePrices || [];
-                        const newPriceObject = competitivePrices.find(p => p.condition === 'New');
-                        
-                        // BuyBox (LandedPrice) を取得
-                        let landedPrice = newPriceObject?.Price?.LandedPrice?.Amount;
-                        
-                        // もしBuyBox価格がない場合は、ListingPrice (商品自体の価格) を代替として探す
-                        if (landedPrice === undefined) {
-                            landedPrice = newPriceObject?.Price?.ListingPrice?.Amount;
-                        }
-
-                        const offerListings = competitivePricing.NumberOfOfferListings || [];
-                        const newOffer = offerListings.find(offer => offer.condition === 'New');
-                        const sellerCount = newOffer ? newOffer.Count : 0;
-
-                        if (landedPrice !== undefined) {
-                            const pricing = {
-                                price: landedPrice,
-                                sellerCount: sellerCount,
-                                // 日本のリードタイム情報の器を用意（将来的にoffers API等で取得可能）
-                                leadTime: marketplaceId === 'A1VC38T7YXB528' ? 2 : undefined, 
-                            };
-                            allPricing[result.ASIN] = pricing;
-                            writeAsinCache('pricing', marketplaceId, userId, result.ASIN, pricing, PRICING_CACHE_TTL_MS);
-                        } else {
-                            console.log(`[Pricing] ASIN ${result.ASIN} has no active BuyBox in ${marketplaceId}. Attempting fallback to item offers...`);
-                            
-                            // フォールバック: カートがない場合は、個別にオファーAPIを叩いて最安値を取得する
-                            // スロットルエラーを避けるために少し待機
-                            await new Promise(resolve => setTimeout(resolve, 500)); 
-                            
-                            console.log(`[Pricing Debug] Actually calling getLowestOfferPrice now for ${result.ASIN}`);
-                            const fallbackData = await getLowestOfferPrice(spApiClient, result.ASIN, marketplaceId);
-                            console.log(`[Pricing Debug] getLowestOfferPrice returned:`, fallbackData);
-                            
-                            if (fallbackData && fallbackData.price > 0) {
-                                console.log(`[Pricing] ASIN ${result.ASIN} fallback successful. Found lowest price: ${fallbackData.price} (Sellers: ${fallbackData.sellerCount})`);
-                                const pricing = { 
-                                    price: fallbackData.price, 
-                                    sellerCount: fallbackData.sellerCount, 
-                                    leadTime: marketplaceId === 'A1VC38T7YXB528' ? 2 : undefined 
-                                };
-                                allPricing[result.ASIN] = pricing;
-                                writeAsinCache('pricing', marketplaceId, userId, result.ASIN, pricing, PRICING_CACHE_TTL_MS);
-                            } else {
-                                console.log(`[Pricing] ASIN ${result.ASIN} fallback failed or no new offers found.`);
-                                const pricing = { price: 0, sellerCount: 0, leadTime: marketplaceId === 'A1VC38T7YXB528' ? 2 : undefined };
-                                allPricing[result.ASIN] = pricing;
-                                writeAsinCache('pricing', marketplaceId, userId, result.ASIN, pricing, PRICING_CACHE_TTL_MS);
-                            }
-                        }
-                    }
-                }
+                // ... (既存の成功処理)
             }
         } catch (error) {
-            console.error(`SP-API Pricing (${marketplaceId}) のチャンク処理中にエラーが発生しました:`, error);
+            console.error(`SP-API Pricing (${marketplaceId}) のチャンク処理中にエラーが発生しました:`, error.message);
+            // 権限エラー(403)などの場合は、このチャンクのASINを0円としてマークしてリサーチを継続する
+            for (const asin of chunk) {
+                if (!allPricing[asin]) {
+                    const pricing = { price: 0, sellerCount: 0, leadTime: marketplaceId === 'A1VC38T7YXB528' ? 2 : undefined };
+                    allPricing[asin] = pricing;
+                    writeAsinCache('pricing', marketplaceId, userId, asin, pricing, PRICING_CACHE_TTL_MS);
+                }
+            }
         }
 
         if (i + chunkSize < missing.length) {

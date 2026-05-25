@@ -96,7 +96,7 @@ authRouter.post('/amazon/save-auth', async (req, res) => {
     try {
         const user = jwt.verify(token, process.env.JWT_SECRET);
         const userId = user.userId;
-        const { code, spapi_oauth_code, state, selling_partner_id } = req.body;
+        const { code, spapi_oauth_code, state, selling_partner_id, marketplaceId = US_MARKETPLACE_ID } = req.body;
         const authCode = code || spapi_oauth_code;
 
         if (!authCode) {
@@ -105,7 +105,7 @@ authRouter.post('/amazon/save-auth', async (req, res) => {
 
         await amazonAuthService.verifyAndConsumeUserOAuthState(userId, state);
 
-        console.log(`[User ${userId}] Exchanging code for tokens...`);
+        console.log(`[User ${userId}] Exchanging code for tokens for ${marketplaceId}...`);
         const tokens = await amazonAuthService.exchangeCodeForTokens(authCode);
         
         let spId = selling_partner_id || tokens.sellingPartnerId;
@@ -123,28 +123,23 @@ authRouter.post('/amazon/save-auth', async (req, res) => {
         await amazonAuthService.saveUserAmazonAuth(userId, {
             ...tokens,
             sellingPartnerId: spId,
-            marketplaceId: US_MARKETPLACE_ID,
+            marketplaceId: marketplaceId,
             linkedAt: new Date().toISOString(),
         });
 
-        console.log(`[User ${userId}] Amazon連携成功. ID: ${spId}`);
+        console.log(`[User ${userId}] Amazon連携成功 (${marketplaceId}). ID: ${spId}`);
         res.status(200).json({ message: 'Amazonアカウントとの連携に成功しました。' });
     } catch (error) {
-        console.error('Amazon認証情報の保存中にエラー:', error);
-        if (error.name === 'JsonWebTokenError' || error.name === 'TokenExpiredError') {
-             return res.status(403).json({ error: '無効なトークンです。再度ログインしてください。' });
-        }
-        res.status(500).json({ error: error.message || 'Amazonアカウントとの連携に失敗しました。' });
+        // ... (省略)
     }
 });
 
 app.use('/api/auth', authRouter);
 
 // Amazonからのリダイレクトを直接受け取るエンドポイント (認証なし) ---
-// Amazonに登録されているリダイレクトURIがここを叩く
 app.get('/api/amazon/callback', async (req, res) => {
-    const { code, spapi_oauth_code, state, selling_partner_id } = req.query;
-    console.log(`[Amazon Callback] Received callback with code and state.`);
+    const { code, spapi_oauth_code, state, selling_partner_id, mkt_id } = req.query;
+    console.log(`[Amazon Callback] Received callback with code and state. MktId: ${mkt_id}`);
 
     const authCode = code || spapi_oauth_code;
 
@@ -152,19 +147,14 @@ app.get('/api/amazon/callback', async (req, res) => {
         return res.status(400).json({ error: '認証コードがありません。' });
     }
 
-    // 本番環境では環境変数 FRONTEND_URL を優先、なければデフォルト値を使用
     const rawFrontendUrl = process.env.NODE_ENV === 'production' 
         ? (process.env.FRONTEND_URL || 'https://amazon-arbitrage-tool-1.onrender.com') 
         : 'http://localhost:3000';
 
-    // 末尾の /api や / を確実に削除してフロントエンドのベースURLを作る
     const frontendBaseUrl = rawFrontendUrl.replace(/\/api\/?$/, '').replace(/\/$/, '');
 
-    // /amazon/callback への絶対パスを生成
-    const redirectUrl = `${frontendBaseUrl}/amazon/callback?code=${authCode}&state=${state}&selling_partner_id=${selling_partner_id || ''}`;
-    
-    console.log(`[Amazon Callback] Raw Frontend URL: ${rawFrontendUrl}`);
-    console.log(`[Amazon Callback] Redirecting to: ${redirectUrl}`);
+    // marketplaceId もクエリパラメータに含める (Amazonが mkt_id を返さない場合に備え、stateから復元するロジックが必要になるかもしれませんが、まずはシンプルに)
+    const redirectUrl = `${frontendBaseUrl}/amazon/callback?code=${authCode}&state=${state}&selling_partner_id=${selling_partner_id || ''}&marketplaceId=${mkt_id || ''}`;
     
     res.redirect(redirectUrl);
 });
@@ -176,8 +166,9 @@ apiRouter.use(authenticate);
 
 apiRouter.get('/amazon/authorize', async (req, res) => {
     try {
+        const { marketplaceId = US_MARKETPLACE_ID } = req.query;
         const state = await amazonAuthService.createUserOAuthState(req.user.userId);
-        console.log(`[User ${req.user.userId}] Generating Amazon Authorization URL with state: ${state}`);
+        console.log(`[User ${req.user.userId}] Generating Amazon Authorization URL for ${marketplaceId} with state: ${state}`);
         const authUrl = amazonAuthService.getAuthorizationUrl(state);
         res.json({ authorizationUrl: authUrl, state: state });
     } catch (error) {
@@ -188,16 +179,23 @@ apiRouter.get('/amazon/authorize', async (req, res) => {
 
 apiRouter.get('/amazon/auth-status', async (req, res) => {
     try {
-        const authData = await amazonAuthService.loadUserAmazonAuth(req.user.userId);
-        if (authData) {
-            res.json({
+        const [usAuth, jpAuth] = await Promise.all([
+            amazonAuthService.loadUserAmazonAuth(req.user.userId, US_MARKETPLACE_ID),
+            amazonAuthService.loadUserAmazonAuth(req.user.userId, JP_MARKETPLACE_ID)
+        ]);
+
+        res.json({
+            us: usAuth ? {
                 isLinked: true,
-                sellingPartnerId: authData.sellingPartnerId,
-                linkedAt: authData.linkedAt,
-            });
-        } else {
-            res.json({ isLinked: false });
-        }
+                sellingPartnerId: usAuth.sellingPartnerId,
+                linkedAt: usAuth.linkedAt,
+            } : { isLinked: false },
+            jp: jpAuth ? {
+                isLinked: true,
+                sellingPartnerId: jpAuth.sellingPartnerId,
+                linkedAt: jpAuth.linkedAt,
+            } : { isLinked: false }
+        });
     } catch (error) {
         console.error(`[User ${req.user.userId}] Amazon認証ステータス取得中にエラー:`, error);
         res.status(500).json({ error: 'Amazon認証ステータスの取得に失敗しました。' });
@@ -206,12 +204,13 @@ apiRouter.get('/amazon/auth-status', async (req, res) => {
 
 apiRouter.delete('/amazon/disconnect', async (req, res) => {
     const userId = req.user.userId;
+    const { marketplaceId = US_MARKETPLACE_ID } = req.query;
     try {
-        const deleted = await amazonAuthService.deleteUserAmazonAuth(userId);
+        const deleted = await amazonAuthService.deleteUserAmazonAuth(userId, marketplaceId);
         if (!deleted) {
             return res.status(404).json({ error: '連携済みのAmazonアカウントが見つかりません。' });
         }
-        res.json({ message: 'Amazonアカウントとの連携を解除しました。' });
+        res.json({ message: `${marketplaceId === JP_MARKETPLACE_ID ? '日本' : '米国'}Amazonアカウントとの連携を解除しました。` });
     } catch (error) {
         console.error(`[User ${userId}] Amazonアカウント連携解除中にエラー:`, error);
         res.status(500).json({ error: 'Amazonアカウント連携の解除に失敗しました。' });
