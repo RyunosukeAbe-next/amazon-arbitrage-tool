@@ -91,8 +91,19 @@ function isAccessTokenExpired(authData) {
  * @returns {SpApi} SP-APIクライアントインスタンス
  */
 async function getSpApiClient(marketplaceId, userId) {
+    console.log(`[getSpApiClient] Initializing for User: ${userId}, Marketplace: ${marketplaceId}`);
     const authData = await amazonAuthService.loadUserAmazonAuth(userId);
-    if (!authData || !authData.refreshToken || !authData.sellingPartnerId) {
+    
+    if (!authData) {
+        console.error(`[getSpApiClient] No auth data found in database for User: ${userId}`);
+        throw new Error(`User ${userId} has not linked their Amazon account or missing required auth data.`);
+    }
+
+    if (!authData.refreshToken || !authData.sellingPartnerId) {
+        console.error(`[getSpApiClient] Auth data is incomplete for User: ${userId}:`, {
+            hasRefreshToken: !!authData.refreshToken,
+            hasSellingPartnerId: !!authData.sellingPartnerId
+        });
         throw new Error(`User ${userId} has not linked their Amazon account or missing required auth data.`);
     }
 
