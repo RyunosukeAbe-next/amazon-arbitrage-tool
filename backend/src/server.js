@@ -105,19 +105,19 @@ authRouter.post('/amazon/save-auth', async (req, res) => {
 
         await amazonAuthService.verifyAndConsumeUserOAuthState(userId, state);
 
-        console.log(`[User ${userId}] Exchanging Amazon authorization code for tokens (via save-auth).`);
+        console.log(`[User ${userId}] Exchanging code for tokens...`);
         const tokens = await amazonAuthService.exchangeCodeForTokens(authCode);
         
-        // selling_partner_id がリクエストにない場合、Amazonのレスポンス(tokens)に含まれている可能性を確認
         let spId = selling_partner_id || tokens.sellingPartnerId;
 
         if (!spId) {
-            console.log(`[User ${userId}] selling_partner_id is missing. Attempting to fetch via SP-API Sellers API...`);
+            console.log(`[User ${userId}] selling_partner_id missing. Fetching via SP-API...`);
             spId = await getSellerId(userId, tokens.refreshToken);
         }
 
         if (!spId) {
-            console.error(`[User ${userId}] Failed to resolve selling_partner_id from request, token response, and API.`);
+            console.error(`[User ${userId}] Critical: Failed to resolve SellingPartnerId.`);
+            return res.status(400).json({ error: 'AmazonセラーIDを取得できませんでした。Amazonの承認画面からやり直してください。' });
         }
 
         await amazonAuthService.saveUserAmazonAuth(userId, {
@@ -127,7 +127,7 @@ authRouter.post('/amazon/save-auth', async (req, res) => {
             linkedAt: new Date().toISOString(),
         });
 
-        console.log(`[User ${userId}] Amazon認証情報が正常に保存されました。SellingPartnerId: ${spId}`);
+        console.log(`[User ${userId}] Amazon連携成功. ID: ${spId}`);
         res.status(200).json({ message: 'Amazonアカウントとの連携に成功しました。' });
     } catch (error) {
         console.error('Amazon認証情報の保存中にエラー:', error);
