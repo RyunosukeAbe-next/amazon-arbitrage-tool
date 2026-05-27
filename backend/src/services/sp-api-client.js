@@ -787,19 +787,31 @@ async function getProductAttributesForAsins(asins, marketplaceId, userId, isCanc
                     volume = (dimensions.length.value * dimensions.width.value * dimensions.height.value).toFixed(2) + ` ${dimensions.length.unit}^3`;
                 }
 
-                const category = item.productType || (attributes.item_classification && attributes.item_classification[0]?.value) || (attributes.product_type_name && attributes.product_type_name[0]) || 'N/A';
+                const pTypeObj = item.productTypes?.[0];
+                const pType = (pTypeObj && typeof pTypeObj === 'object') ? pTypeObj.productType : (pTypeObj || 'N/A');
+                const category = pType !== 'N/A' ? pType : ((attributes.item_classification && attributes.item_classification[0]?.value) || (attributes.product_type_name && attributes.product_type_name[0]) || 'N/A');
                 const hasVariations = relationships.some(rel => rel.type === 'VARIATION');
 
                 const productAttributes = {
-                    weight: weightObj, // 計算用
-                    weightDisplay: weightStr, // 表示用
+                    weight: weightObj,
+                    weightDisplay: weightStr,
                     volume,
                     category,
                     hasVariations,
-                };                    allAttributes[item.asin] = productAttributes;
-                    writeAsinCache('attributes', marketplaceId, userId, item.asin, productAttributes, ATTRIBUTES_CACHE_TTL_MS);
+                };
+                allAttributes[item.asin] = productAttributes;
+                writeAsinCache('attributes', marketplaceId, userId, item.asin, productAttributes, ATTRIBUTES_CACHE_TTL_MS);
                 }
-            }
+
+                // リクエストしたASINのうち、レスポンスに含まれなかったものをチェック
+                const respondedAsins = new Set(res.items.map(it => it.asin));
+                const missingInResponse = chunk.filter(asin => !respondedAsins.has(asin));
+                if (missingInResponse.length > 0) {
+                console.warn(`SP-API Attributes: ${missingInResponse.length} ASINs were missing in API response: ${missingInResponse.join(', ')}`);
+                }
+                } else {
+                console.warn(`SP-API Attributes: No items returned for chunk ${Math.floor(i / chunkSize) + 1}`);
+                }
         } catch (error) {
             console.error(`SP-API Attributes (${marketplaceId}) のチャンク処理中にエラーが発生しました:`, error);
         }
