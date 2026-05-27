@@ -36,30 +36,52 @@ function calculateProfit(product, settings) {
   const sellingPriceJpy = usPrice * exchangeRateJpyToUsd;
   const amazonFeeJpy = sellingPriceJpy * (amazonFeeRate || 0.15);
 
-  // 2. 国際送料の計算 (Tiered logic is kept)
+  // 2. 国際送料の計算
   const parseWeight = (weightInput) => {
+    if (!weightInput) return null;
+
+    let value = 0;
+    let unit = 'g';
+
     if (typeof weightInput === 'number') {
-      return weightInput > 0 ? weightInput : null;
+      value = weightInput;
+    } else if (typeof weightInput === 'object') {
+      value = Number(weightInput.value);
+      unit = (weightInput.unit || 'g').toLowerCase();
+    } else if (typeof weightInput === 'string') {
+      const match = weightInput.trim().toLowerCase().match(/^([0-9]+(?:\.[0-9]+)?)\s*([a-z]*)/);
+      if (!match) return null;
+      value = Number(match[1]);
+      unit = match[2] || 'g';
+    } else {
+      return null;
     }
 
-    if (weightInput && typeof weightInput === 'object') {
-      const value = Number(weightInput.value);
-      if (!Number.isFinite(value) || value <= 0) return null;
-      return parseWeight(`${value} ${weightInput.unit || 'g'}`);
-    }
-
-    if (!weightInput || typeof weightInput !== 'string') return null;
-    const match = weightInput.trim().toLowerCase().match(/^([0-9]+(?:\.[0-9]+)?)\s*([a-z]*)/);
-    if (!match) return null;
-
-    const value = Number(match[1]);
     if (!Number.isFinite(value) || value <= 0) return null;
-    const unit = match[2] || 'g';
-    if (unit === 'kg' || unit === 'kilogram' || unit === 'kilograms') return value * 1000;
-    if (unit === 'g' || unit === 'gram' || unit === 'grams') return value;
-    if (unit === 'ounce' || unit === 'ounces' || unit === 'oz') return value * 28.35;
-    if (unit === 'pound' || unit === 'pounds' || unit === 'lb' || unit === 'lbs') return value * 453.592;
-    return value; // Assume grams if no unit or unknown unit
+
+    // 単位変換ロジック
+    switch (unit) {
+      case 'kg':
+      case 'kilogram':
+      case 'kilograms':
+        return value * 1000;
+      case 'g':
+      case 'gram':
+      case 'grams':
+        return value;
+      case 'ounce':
+      case 'ounces':
+      case 'oz':
+        return value * 28.35;
+      case 'pound':
+      case 'pounds':
+      case 'lb':
+      case 'lbs':
+        return value * 453.592;
+      default:
+        // 単位不明な場合はgと仮定するが、100未満ならkgの可能性も考慮（要件により調整）
+        return value;
+    }
   };
   const parsedWeightGrams = parseWeight(weight);
   let shippingWeightGrams = parsedWeightGrams;

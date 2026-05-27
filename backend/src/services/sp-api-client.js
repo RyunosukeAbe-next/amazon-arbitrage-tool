@@ -370,7 +370,33 @@ async function getCompetitivePricingForAsins(asins, marketplaceId, userId, isCan
             }, `SP-API Pricing (${marketplaceId}) chunk ${Math.floor(i / chunkSize) + 1}`);
 
             if (Array.isArray(res)) {
-                // ... (既存の成功処理)
+                for (const item of res) {
+                    const asin = item.ASIN || item.asin;
+                    if (!asin) continue;
+
+                    const product = item.Product;
+                    const compPricing = product?.CompetitivePricing;
+                    const compPrices = compPricing?.CompetitivePrices;
+                    const offerListings = compPricing?.NumberOfOfferListings;
+
+                    let price = 0;
+                    if (compPrices && compPrices.length > 0) {
+                        // LandedPrice (送料込み) を優先、なければ ListingPrice
+                        const p = compPrices[0].Price;
+                        price = parseFloat(p?.LandedPrice?.Amount || p?.ListingPrice?.Amount || 0);
+                    }
+
+                    let sellerCount = 0;
+                    if (offerListings && offerListings.length > 0) {
+                        // New (新品) の出品者数を取得
+                        const newOffers = offerListings.find(ol => ol.condition === 'New');
+                        sellerCount = parseInt(newOffers?.Count || 0, 10);
+                    }
+
+                    const pricing = { price, sellerCount, leadTime: marketplaceId === 'A1VC38T7YXB528' ? 2 : undefined };
+                    allPricing[asin] = pricing;
+                    writeAsinCache('pricing', marketplaceId, userId, asin, pricing, PRICING_CACHE_TTL_MS);
+                }
             }
         } catch (error) {
             console.error(`SP-API Pricing (${marketplaceId}) のチャンク処理中にエラーが発生しました:`, error.message);
@@ -743,11 +769,14 @@ async function getProductAttributesForAsins(asins, marketplaceId, userId, isCanc
                     const dimensions = item.dimensions?.[0]?.item || {};
                     const relationships = item.relationships || [];
 
-                    let weight = null;
+                    let weightObj = null;
                     if (attributes.item_package_weight) {
                         const weightData = attributes.item_package_weight[0];
                         if (weightData && weightData.value > 0) {
-                            weight = `${weightData.value} ${weightData.unit}`;
+                            weightObj = {
+                                value: weightData.value,
+                                unit: weightData.unit,
+                            };
                         }
                     }
 
@@ -756,11 +785,11 @@ async function getProductAttributesForAsins(asins, marketplaceId, userId, isCanc
                         volume = (dimensions.length.value * dimensions.width.value * dimensions.height.value).toFixed(2) + ` ${dimensions.length.unit}^3`;
                     }
                     
-                    const category = attributes.product_type_name?.[0] || 'N/A';
+                    const category = item.productType || (attributes.item_classification && attributes.item_classification[0]?.value) || (attributes.product_type_name && attributes.product_type_name[0]) || 'N/A';
                     const hasVariations = relationships.some(rel => rel.type === 'VARIATION');
 
                     const productAttributes = {
-                        weight,
+                        weight: weightObj,
                         volume,
                         category,
                         hasVariations,
