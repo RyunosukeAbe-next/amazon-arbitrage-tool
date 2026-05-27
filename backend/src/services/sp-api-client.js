@@ -484,11 +484,11 @@ async function getCatalogItemAttributes(asin, marketplaceId, userId) {
 
 // (他のダミー関数は変更なし)
 async function putListingsItem(asin, sku, price, quantity, marketplaceId, userId, productType = 'GENERIC', handlingTime = 2) {
-    // 汎用的な 'PRODUCT' が指定された場合はエラーになりやすいため、できる限り具体的な productType を使用するか、
-    // あるいは 'GENERIC' などの他の安全なデフォルトを使用する。
-    // 今回は呼び出し元から渡された productType をそのまま使用し、'PRODUCT' の場合は 'GENERIC' にフォールバックする
-    const typeToUse = (productType && productType !== 'PRODUCT') ? productType : 'GENERIC'; 
-    console.log(`SP-API Listing: Attempting to list ASIN ${asin} (Product Type: ${typeToUse}, Original: ${productType}) on ${marketplaceId}`);
+    // 優先順位: 1. 引数の productType (カタログAPI由来), 2. 'GENERIC' (フォールバック)
+    // ただし 'PRODUCT' は抽象的すぎてエラーになりやすいため避ける
+    const typeToUse = (productType && productType !== 'PRODUCT' && productType !== 'N/A') ? productType : 'GENERIC'; 
+    
+    console.log(`SP-API Listing: Attempting to list ASIN ${asin} (Using Product Type: ${typeToUse}) on ${marketplaceId}`);
     
     if (!asin || !sku || !price || !marketplaceId) {
         throw new Error('出品に必要な情報が不足しています。');
@@ -501,6 +501,7 @@ async function putListingsItem(asin, sku, price, quantity, marketplaceId, userId
     }
 
     const numericPrice = parseFloat(price);
+    // 在庫は最低 1 を保証
     const numericQuantity = Math.max(1, parseInt(quantity, 10) || 1);
     const numericHandlingTime = Math.max(1, parseInt(handlingTime, 10) || 2);
 

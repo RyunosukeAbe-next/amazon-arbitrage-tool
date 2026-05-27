@@ -519,28 +519,43 @@ apiRouter.post('/bulk-listing-from-asins', async (req, res) => {
                 continue;
             }
 
-            const usPriceInfo = usPricing[product.asin];
-            const jpPriceInfo = jpPricing[product.asin];
-            if (!usPriceInfo || !jpPriceInfo) {
-                detailLogs.push({ asin: product.asin, status: 'skipped', reason: '価格不足' });
+            const usPriceInfo = usPricing[product.asin] || { price: 0 };
+            const jpPriceInfo = jpPricing[product.asin] || { price: 0 };
+
+            if (!jpPriceInfo || jpPriceInfo.price <= 0) {
+                detailLogs.push({ asin: product.asin, status: 'skipped', reason: '日本の価格が不明なため仕入れコストが計算できません。' });
                 continue;
             }
+
+            let listingPrice = usPriceInfo.price;
+
+            // 米国価格が0（在庫なし/ライバルなし）の場合の処理
+            if (listingPrice <= 0) {
+                // 仮の販売価格を計算 (日本価格の1.5倍程度、または固定の利益を乗せる)
+                // 為替を考慮して、最低限赤字にならない価格を算出
+                const minJpyPrice = (jpPriceInfo.price * 1.5) + 3000; // 仕入れ1.5倍 + 送料等考慮で3000円
+                listingPrice = Math.round((minJpyPrice / settings.exchangeRateJpyToUsd) * 100) / 100;
+                console.log(`[Price Fallback] ASIN ${product.asin} has no US price. Set fallback price: $${listingPrice}`);
+            }
+
             const productAttributes = attributes[product.asin] || {};
-            const combinedProduct = { ...product, ...productAttributes, usPrice: usPriceInfo.price, jpPrice: jpPriceInfo.price };
+            const combinedProduct = { ...product, ...productAttributes, usPrice: listingPrice, jpPrice: jpPriceInfo.price };
             const profitResult = calculateProfit(combinedProduct, settings);
             const exclusionInfo = isExcluded(combinedProduct, settings, profitResult);
 
-            if (exclusionInfo.excluded) {
+            if (exclusionInfo.excluded && usPriceInfo.price > 0) {
+                // 米国価格が存在するのに利益が出ない場合はスキップ
                 detailLogs.push({ asin: product.asin, status: 'skipped', reason: exclusionInfo.reason });
                 continue;
             }
+
             let skuToUse = `AUTO-${Date.now()}-${product.asin}`;
             try {
                 const quantityToUse = jpPriceInfo.sellerCount > 0 ? jpPriceInfo.sellerCount : 1;
                 const leadTimeBuffer = settings.leadTimeBuffer || 3;
                 const calculatedLeadTime = (jpPriceInfo.leadTime || 2) + leadTimeBuffer;
 
-                await putListingsItem(product.asin, skuToUse, usPriceInfo.price, quantityToUse, marketplaceId, userId, product.productType, calculatedLeadTime);
+                await putListingsItem(product.asin, skuToUse, listingPrice, quantityToUse, marketplaceId, userId, product.productType, calculatedLeadTime);
                 await listingManager.addTrackedListing(userId, skuToUse, product.asin, marketplaceId, quantityToUse, usPriceInfo.price, product.productType);
                 listedCount++;
                 detailLogs.push({ asin: product.asin, sku: skuToUse, status: 'success' });
