@@ -199,8 +199,8 @@ async function updateListingLog(userId, logId, updates) {
                 mergedLog.listedProductCount,
                 mergedLog.summary,
                 mergedLog.updatedAt,
-                mergedLog,
-                updates.details || null
+                JSON.stringify(mergedLog),
+                updates.details ? JSON.stringify(updates.details) : null
             ]
         );
         return result.rows[0];

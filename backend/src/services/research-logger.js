@@ -113,8 +113,8 @@ async function saveResearchLog(userId, searchInfo, results) {
                 newLogMeta.searchType,
                 newLogMeta.query,
                 newLogMeta.resultCount,
-                newLogMeta,
-                results
+                JSON.stringify(newLogMeta),
+                JSON.stringify(results)
             ]
         );
         return newLogMeta;
