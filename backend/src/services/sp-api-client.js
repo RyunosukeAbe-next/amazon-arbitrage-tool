@@ -96,9 +96,10 @@ async function getSpApiClient(marketplaceId, userId, options = {}) {
     
     let authData = null;
     if (!manualRefreshToken) {
-        authData = await amazonAuthService.loadUserAmazonAuth(userId);
+        // marketplaceId を渡して、正しいマーケットプレイスの認証情報をロードする
+        authData = await amazonAuthService.loadUserAmazonAuth(userId, marketplaceId);
         if (!authData) {
-            throw new Error(`User ${userId} has not linked their Amazon account.`);
+            throw new Error(`User ${userId} has not linked their Amazon account for marketplace ${marketplaceId}.`);
         }
     }
 
@@ -131,7 +132,11 @@ async function getSpApiClient(marketplaceId, userId, options = {}) {
 
     if (isJP) {
         spApiConfig.endpoint = 'https://sellingpartnerapi-fe.amazon.com';
+    } else {
+        spApiConfig.endpoint = 'https://sellingpartnerapi-na.amazon.com';
     }
+
+    console.log(`[getSpApiClient] Initializing SP-API client for Region: ${spApiRegion}, Marketplace: ${marketplaceId}, User: ${userId}`);
 
     return {
         client: new SpApi(spApiConfig),

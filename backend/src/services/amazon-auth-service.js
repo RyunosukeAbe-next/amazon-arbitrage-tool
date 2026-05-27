@@ -63,7 +63,7 @@ async function saveUserAmazonAuth(userId, authData) {
              ON CONFLICT (user_id, marketplace_id) DO UPDATE SET
                data = EXCLUDED.data,
                updated_at = NOW()`,
-            [userId, marketplaceId, authData]
+            [userId, marketplaceId, JSON.stringify(authData)]
         );
         return;
     }
