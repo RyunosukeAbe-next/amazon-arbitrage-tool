@@ -743,7 +743,7 @@ async function getProductAttributesForAsins(asins, marketplaceId, userId, isCanc
     
     const { client: spApiClient } = await getSpApiClient(marketplaceId, userId);
 
-    const chunkSize = 20; 
+    const chunkSize = 10; 
     for (let i = 0; i < missing.length; i += chunkSize) {
         if (isCancelled()) {
             console.log(`SP-API Attributes: Process cancelled by client.`);
@@ -756,12 +756,13 @@ async function getProductAttributesForAsins(asins, marketplaceId, userId, isCanc
                 method: 'GET',
                 api_path: '/catalog/2022-04-01/items',
                 query: {
-                marketplaceIds: marketplaceId,
-                identifiers: chunk.join(','),
-                identifiersType: 'ASIN',
-                includedData: 'attributes,dimensions,relationships,productTypes',
+                    marketplaceIds: marketplaceId,
+                    identifiers: chunk.join(','),
+                    identifiersType: 'ASIN',
+                    includedData: 'attributes,dimensions,relationships,productTypes',
+                    pageSize: chunkSize,
                 },
-                }, `SP-API Attributes (${marketplaceId}) chunk ${Math.floor(i / chunkSize) + 1}`);
+            }, `SP-API Attributes (${marketplaceId}) chunk ${Math.floor(i / chunkSize) + 1}`);
 
                 if (res.items && res.items.length > 0) {
                 for (const item of res.items) {
