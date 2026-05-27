@@ -756,45 +756,47 @@ async function getProductAttributesForAsins(asins, marketplaceId, userId, isCanc
                 method: 'GET',
                 api_path: '/catalog/2022-04-01/items',
                 query: {
-                    marketplaceIds: marketplaceId,
-                    identifiers: chunk.join(','),
-                    identifiersType: 'ASIN',
-                    includedData: 'attributes,dimensions,relationships',
+                marketplaceIds: marketplaceId,
+                identifiers: chunk.join(','),
+                identifiersType: 'ASIN',
+                includedData: 'attributes,dimensions,relationships,productTypes',
                 },
-            }, `SP-API Attributes (${marketplaceId}) chunk ${Math.floor(i / chunkSize) + 1}`);
+                }, `SP-API Attributes (${marketplaceId}) chunk ${Math.floor(i / chunkSize) + 1}`);
 
-            if (res.items && res.items.length > 0) {
+                if (res.items && res.items.length > 0) {
                 for (const item of res.items) {
-                    const attributes = item.attributes || {};
-                    const dimensions = item.dimensions?.[0]?.item || {};
-                    const relationships = item.relationships || [];
+                const attributes = item.attributes || {};
+                const dimensions = item.dimensions?.[0]?.item || {};
+                const relationships = item.relationships || [];
 
-                    let weightObj = null;
-                    if (attributes.item_package_weight) {
-                        const weightData = attributes.item_package_weight[0];
-                        if (weightData && weightData.value > 0) {
-                            weightObj = {
-                                value: weightData.value,
-                                unit: weightData.unit,
-                            };
-                        }
+                let weightObj = null;
+                let weightStr = null;
+                if (attributes.item_package_weight) {
+                    const weightData = attributes.item_package_weight[0];
+                    if (weightData && weightData.value > 0) {
+                        weightObj = {
+                            value: weightData.value,
+                            unit: weightData.unit,
+                        };
+                        weightStr = `${weightData.value} ${weightData.unit}`;
                     }
+                }
 
-                    let volume = null;
-                    if (dimensions.length?.value && dimensions.width?.value && dimensions.height?.value) {
-                        volume = (dimensions.length.value * dimensions.width.value * dimensions.height.value).toFixed(2) + ` ${dimensions.length.unit}^3`;
-                    }
-                    
-                    const category = item.productType || (attributes.item_classification && attributes.item_classification[0]?.value) || (attributes.product_type_name && attributes.product_type_name[0]) || 'N/A';
-                    const hasVariations = relationships.some(rel => rel.type === 'VARIATION');
+                let volume = null;
+                if (dimensions.length?.value && dimensions.width?.value && dimensions.height?.value) {
+                    volume = (dimensions.length.value * dimensions.width.value * dimensions.height.value).toFixed(2) + ` ${dimensions.length.unit}^3`;
+                }
 
-                    const productAttributes = {
-                        weight: weightObj,
-                        volume,
-                        category,
-                        hasVariations,
-                    };
-                    allAttributes[item.asin] = productAttributes;
+                const category = item.productType || (attributes.item_classification && attributes.item_classification[0]?.value) || (attributes.product_type_name && attributes.product_type_name[0]) || 'N/A';
+                const hasVariations = relationships.some(rel => rel.type === 'VARIATION');
+
+                const productAttributes = {
+                    weight: weightObj, // 計算用
+                    weightDisplay: weightStr, // 表示用
+                    volume,
+                    category,
+                    hasVariations,
+                };                    allAttributes[item.asin] = productAttributes;
                     writeAsinCache('attributes', marketplaceId, userId, item.asin, productAttributes, ATTRIBUTES_CACHE_TTL_MS);
                 }
             }
