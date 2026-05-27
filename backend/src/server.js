@@ -284,6 +284,7 @@ async function runProductSearch(userId, params, options = {}) {
       const jpPriceInfo = jpPricing[productAsin] || { price: 0, sellerCount: 0 };
       const productAttributes = attributes[productAsin] || {
         weight: null,
+        weightDisplay: 'N/A',
         volume: null,
         category: 'N/A',
         hasVariations: false,
@@ -408,7 +409,7 @@ apiRouter.post('/download-csv', async (req, res) => {
             { field: 'productName', title: '商品名' },
             { field: 'brand', title: 'ブランド' },
             { field: 'category', title: 'カテゴリ' },
-            { field: 'weight', title: '重量' },
+            { field: 'weightDisplay', title: '重量' },
             { field: 'volume', title: '体積' },
             { field: 'hasVariations', title: 'バリエーション有無' },
             { field: 'usPrice', title: '米国価格 (USD)' },
