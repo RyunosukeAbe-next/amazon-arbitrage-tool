@@ -514,10 +514,8 @@ apiRouter.post('/bulk-listing-from-asins', async (req, res) => {
             if (isCancelled) break;
             processedCount++;
             const existingListing = await listingManager.getTrackedListingByAsin(userId, product.asin);
-            if (existingListing) {
-                detailLogs.push({ asin: product.asin, status: 'skipped', reason: '既に出品管理中のASINです。' });
-                continue;
-            }
+            // 既存の出品があってもスキップせず、更新（上書き）を許可するように変更
+            const isUpdate = !!existingListing;
 
             const usPriceInfo = usPricing[product.asin] || { price: 0 };
             const jpPriceInfo = jpPricing[product.asin] || { price: 0 };
@@ -531,9 +529,7 @@ apiRouter.post('/bulk-listing-from-asins', async (req, res) => {
 
             // 米国価格が0（在庫なし/ライバルなし）の場合の処理
             if (listingPrice <= 0) {
-                // 仮の販売価格を計算 (日本価格の1.5倍程度、または固定の利益を乗せる)
-                // 為替を考慮して、最低限赤字にならない価格を算出
-                const minJpyPrice = (jpPriceInfo.price * 1.5) + 3000; // 仕入れ1.5倍 + 送料等考慮で3000円
+                const minJpyPrice = (jpPriceInfo.price * 1.5) + 3000;
                 listingPrice = Math.round((minJpyPrice / settings.exchangeRateJpyToUsd) * 100) / 100;
                 console.log(`[Price Fallback] ASIN ${product.asin} has no US price. Set fallback price: $${listingPrice}`);
             }
@@ -544,21 +540,33 @@ apiRouter.post('/bulk-listing-from-asins', async (req, res) => {
             const exclusionInfo = isExcluded(combinedProduct, settings, profitResult);
 
             if (exclusionInfo.excluded && usPriceInfo.price > 0) {
-                // 米国価格が存在するのに利益が出ない場合はスキップ
                 detailLogs.push({ asin: product.asin, status: 'skipped', reason: exclusionInfo.reason });
                 continue;
             }
 
-            let skuToUse = `AUTO-${Date.now()}-${product.asin}`;
+            // SKUの決定: 既存があればそれを使う、なければ新規発行
+            let skuToUse = isUpdate ? existingListing.sku : `AUTO-${Date.now()}-${product.asin}`;
+            
             try {
                 const quantityToUse = jpPriceInfo.sellerCount > 0 ? jpPriceInfo.sellerCount : 1;
                 const leadTimeBuffer = settings.leadTimeBuffer || 3;
                 const calculatedLeadTime = (jpPriceInfo.leadTime || 2) + leadTimeBuffer;
 
-                await putListingsItem(product.asin, skuToUse, listingPrice, quantityToUse, marketplaceId, userId, product.productType, calculatedLeadTime);
-                await listingManager.addTrackedListing(userId, skuToUse, product.asin, marketplaceId, quantityToUse, usPriceInfo.price, product.productType);
-                listedCount++;
-                detailLogs.push({ asin: product.asin, sku: skuToUse, status: 'success' });
+                const result = await putListingsItem(product.asin, skuToUse, listingPrice, quantityToUse, marketplaceId, userId, product.productType, calculatedLeadTime);
+                
+                if (result.status === 'SUCCESS') {
+                    if (isUpdate) {
+                        // 既存データの更新（もし必要なら管理テーブルも更新）
+                        // ここではログに成功を記録
+                        detailLogs.push({ asin: product.asin, sku: skuToUse, status: 'success', message: '既存の出品を更新しました。' });
+                    } else {
+                        await listingManager.addTrackedListing(userId, skuToUse, product.asin, marketplaceId, quantityToUse, listingPrice, product.productType);
+                        detailLogs.push({ asin: product.asin, sku: skuToUse, status: 'success' });
+                    }
+                    listedCount++;
+                } else {
+                    detailLogs.push({ asin: product.asin, status: 'error', reason: result.message || 'Amazon側での処理に失敗しました（カタログ情報不足など）。' });
+                }
             } catch(e) {
                 detailLogs.push({ asin: product.asin, status: 'error', reason: e.message });
             }
