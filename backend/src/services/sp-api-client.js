@@ -765,14 +765,19 @@ async function getProductAttributesForAsins(asins, marketplaceId, userId, isCanc
     const { client: spApiClient } = await getSpApiClient(marketplaceId, userId);
 
     const chunkSize = 10; 
+    console.log(`SP-API Attributes: Starting harvest for ${missing.length} ASINs in chunks of ${chunkSize}...`);
+
     for (let i = 0; i < missing.length; i += chunkSize) {
         if (isCancelled()) {
             console.log(`SP-API Attributes: Process cancelled by client.`);
             break;
         }
         const chunk = missing.slice(i, i + chunkSize);
+        const chunkNum = Math.floor(i / chunkSize) + 1;
+        const totalChunks = Math.ceil(missing.length / chunkSize);
         
         try {
+            console.log(`SP-API Attributes: Fetching chunk ${chunkNum}/${totalChunks}...`);
             const res = await callApiWithRetries(spApiClient, {
                 method: 'GET',
                 api_path: '/catalog/2022-04-01/items',
@@ -783,70 +788,78 @@ async function getProductAttributesForAsins(asins, marketplaceId, userId, isCanc
                     includedData: 'attributes,dimensions,relationships,productTypes',
                     pageSize: chunkSize,
                 },
-            }, `SP-API Attributes (${marketplaceId}) chunk ${Math.floor(i / chunkSize) + 1}`);
+            }, `SP-API Attributes (${marketplaceId}) chunk ${chunkNum}`);
 
-                if (res.items && res.items.length > 0) {
-                for (const item of res.items) {
-                const attributes = item.attributes || {};
-                const dimensions = item.dimensions?.[0]?.item || {};
-                const relationships = item.relationships || [];
+                if (res && res.items && res.items.length > 0) {
+                    for (const item of res.items) {
+                        const attributes = item.attributes || {};
+                        const dimensions = item.dimensions?.[0]?.item || {};
+                        const relationships = item.relationships || [];
 
-                let weightKg = null;
-                let weightStr = null;
-                if (attributes.item_package_weight) {
-                    const weightData = attributes.item_package_weight[0];
-                    if (weightData && weightData.value > 0) {
-                        const val = parseFloat(weightData.value);
-                        const unit = (weightData.unit || '').toLowerCase();
-                        if (unit.includes('pound') || unit === 'lb' || unit === 'lbs') {
-                            weightKg = val * 0.453592;
-                        } else if (unit.includes('gram') || unit === 'g') {
-                            weightKg = val / 1000;
-                        } else if (unit.includes('ounce') || unit === 'oz') {
-                            weightKg = val * 0.0283495;
-                        } else {
-                            weightKg = val;
+                        let weightKg = null;
+                        let weightStr = null;
+                        if (attributes.item_package_weight) {
+                            const weightData = attributes.item_package_weight[0];
+                            if (weightData && weightData.value > 0) {
+                                const val = parseFloat(weightData.value);
+                                const unit = (weightData.unit || '').toLowerCase();
+                                if (unit.includes('pound') || unit === 'lb' || unit === 'lbs') {
+                                    weightKg = val * 0.453592;
+                                } else if (unit.includes('gram') || unit === 'g') {
+                                    weightKg = val / 1000;
+                                } else if (unit.includes('ounce') || unit === 'oz') {
+                                    weightKg = val * 0.0283495;
+                                } else {
+                                    weightKg = val;
+                                }
+                                weightKg = Math.round(weightKg * 1000) / 1000;
+                                weightStr = weightKg.toString();
+                            }
                         }
-                        weightKg = Math.round(weightKg * 1000) / 1000; // グラム単位まで保持
-                        weightStr = weightKg.toString(); // フィルターしやすいように数値のみの文字列
+
+                        let volumeNumber = null;
+                        let volumeStr = null;
+                        if (dimensions.length?.value && dimensions.width?.value && dimensions.height?.value) {
+                            const l = parseFloat(dimensions.length.value);
+                            const w = parseFloat(dimensions.width.value);
+                            const h = parseFloat(dimensions.height.value);
+                            const unit = (dimensions.length.unit || '').toLowerCase();
+                            let factor = 1; 
+                            if (unit.includes('inch')) factor = 2.54;
+                            else if (unit.includes('foot')) factor = 30.48;
+                            else if (unit.includes('millimeter') || unit === 'mm') factor = 0.1;
+                            volumeNumber = Math.round((l * factor * w * factor * h * factor) * 100) / 100;
+                            volumeStr = volumeNumber.toString();
+                        }
+
+                        const pTypeObj = item.productTypes?.[0];
+                        const pType = (pTypeObj && typeof pTypeObj === 'object') ? pTypeObj.productType : (pTypeObj || 'N/A');
+                        const category = pType !== 'N/A' ? pType : ((attributes.item_classification && attributes.item_classification[0]?.value) || (attributes.product_type_name && attributes.product_type_name[0]) || 'N/A');
+                        const hasVariations = relationships.some(rel => rel.type === 'VARIATION');
+
+                        const productAttributes = {
+                            weight: weightKg,
+                            weightKg: weightKg,
+                            weightDisplay: weightStr,
+                            volume: volumeNumber,
+                            volumeNumber: volumeNumber,
+                            volumeDisplay: volumeStr,
+                            category,
+                            hasVariations,
+                        };
+                        allAttributes[item.asin] = productAttributes;
+                        writeAsinCache('attributes', marketplaceId, userId, item.asin, productAttributes, ATTRIBUTES_CACHE_TTL_MS);
                     }
                 }
+        } catch (error) {
+            console.error(`SP-API Attributes: Error in chunk ${chunkNum}/${totalChunks}:`, error.message);
+            // エラーが発生しても次のチャンクへ進む
+        }
 
-                let volumeNumber = null;
-                let volumeStr = null;
-                if (dimensions.length?.value && dimensions.width?.value && dimensions.height?.value) {
-                    const l = parseFloat(dimensions.length.value);
-                    const w = parseFloat(dimensions.width.value);
-                    const h = parseFloat(dimensions.height.value);
-                    const unit = (dimensions.length.unit || '').toLowerCase();
-                    
-                    let factor = 1; // センチメートル基準
-                    if (unit.includes('inch')) factor = 2.54;
-                    else if (unit.includes('foot')) factor = 30.48;
-                    else if (unit.includes('millimeter') || unit === 'mm') factor = 0.1;
-
-                    volumeNumber = Math.round((l * factor * w * factor * h * factor) * 100) / 100;
-                    volumeStr = volumeNumber.toString();
-                }
-
-                const pTypeObj = item.productTypes?.[0];
-                const pType = (pTypeObj && typeof pTypeObj === 'object') ? pTypeObj.productType : (pTypeObj || 'N/A');
-                const category = pType !== 'N/A' ? pType : ((attributes.item_classification && attributes.item_classification[0]?.value) || (attributes.product_type_name && attributes.product_type_name[0]) || 'N/A');
-                const hasVariations = relationships.some(rel => rel.type === 'VARIATION');
-
-                const productAttributes = {
-                    weight: weightKg, // 数値として保持
-                    weightKg: weightKg,
-                    weightDisplay: weightStr, // 数値文字列
-                    volume: volumeNumber, // 数値として保持
-                    volumeNumber: volumeNumber,
-                    volumeDisplay: volumeStr,
-                    category,
-                    hasVariations,
-                };
-                allAttributes[item.asin] = productAttributes;
-                writeAsinCache('attributes', marketplaceId, userId, item.asin, productAttributes, ATTRIBUTES_CACHE_TTL_MS);
-                }
+        if (i + chunkSize < missing.length) {
+            await sleep(1500); // 連続リクエストによる429エラーを回避するためのウェイト
+        }
+    }
 
                 // リクエストしたASINのうち、レスポンスに含まれなかったものをチェック
                 const respondedAsins = new Set(res.items.map(it => it.asin));

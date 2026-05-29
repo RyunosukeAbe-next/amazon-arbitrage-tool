@@ -9,7 +9,7 @@ const KEEPA_API_ENDPOINT = 'https://api.keepa.com';
  * @returns {Promise<string[]>} ASINの配列
  */
 
-async function getASINsBySellerId(sellerId, marketplaceDomain = 'com', limit = Number(process.env.KEEPA_SELLER_ASIN_LIMIT || 1000)) {
+async function getASINsBySellerId(sellerId, marketplaceDomain = 'com', limit = 1000) {
   const apiKey = process.env.KEEPA_API_KEY;
   if (!apiKey) {
     throw new Error('Keepa APIキーが設定されていません。');
@@ -20,19 +20,20 @@ async function getASINsBySellerId(sellerId, marketplaceDomain = 'com', limit = N
   const cleanSellerId = sellerId.trim();
   const normalizedLimit = Math.min(Math.max(parseInt(limit, 10) || 1000, 1), 10000);
 
+  console.log(`[Keepa] Requesting ASINs for seller: ${cleanSellerId}, Domain: ${domainId}, Limit: ${normalizedLimit}`);
+
   try {
-    // 修正ポイント：axios.get を axios.post に変更し、大量のASIN取得に対応させます
-    const response = await axios.post(`${KEEPA_API_ENDPOINT}/query?key=${apiKey}&domain=${domainId}`, {
-      "seller": [cleanSellerId]
-    });
+    // query API を使用してセラーの全ASINリストを取得
+    const response = await axios.get(`${KEEPA_API_ENDPOINT}/query?key=${apiKey}&domain=${domainId}&seller=${cleanSellerId}`);
 
     if (response.data && response.data.asinList) {
+      const totalFound = response.data.asinList.length;
       const activeAsins = response.data.asinList.slice(0, normalizedLimit); 
-      console.log(`[SUCCESS] Keepa API: Found ${response.data.asinList.length} ASINs. Using first ${activeAsins.length}.`);
+      console.log(`[SUCCESS] Keepa API: Found total ${totalFound} ASINs. Harvesting first ${activeAsins.length} ASINs based on limit.`);
       return activeAsins;
     }
 
-    console.log(`[INFO] Keepa API: No ASINs found for ${cleanSellerId}.`);
+    console.log(`[INFO] Keepa API: No ASINs found for seller ${cleanSellerId}. Response:`, JSON.stringify(response.data));
     return [];
   } catch (error) {
     console.error('[ERROR] Keepa API:', error.response?.data || error.message);
