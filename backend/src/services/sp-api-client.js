@@ -91,7 +91,6 @@ async function getSpApiClient(marketplaceId, userId, options = {}) {
         refresh_token: refreshToken,
         endpoint: isJP ? 'https://sellingpartnerapi-fe.amazon.com' : 'https://sellingpartnerapi-na.amazon.com'
     };
-    console.log(`[SP-API] Init Client for ${marketplaceId} (User: ${userId})`);
     return { client: new SpApi(spApiConfig), sellingPartnerId };
 }
 
@@ -108,8 +107,10 @@ async function getSellerId(userId, refreshToken) {
 }
 
 async function searchProductsByKeywords(keywords, marketplaceId, userId, classificationId = null, isCancelled = () => false) {
-    let logPrefix = `[SP-API Search: '${keywords}']`;
+    const keywordStr = Array.isArray(keywords) ? keywords.join(' ') : String(keywords);
+    let logPrefix = `[SP-API Search: '${keywordStr}']`;
     console.log(`${logPrefix} Starting in ${marketplaceId}`);
+    
     const { client: spApiClient } = await getSpApiClient(marketplaceId, userId);
     let allProducts = [];
     let nextToken = undefined;
@@ -120,17 +121,16 @@ async function searchProductsByKeywords(keywords, marketplaceId, userId, classif
     do {
         if (isCancelled()) break;
         const queryParams = {
-            keywords: keywords.join(','),
+            keywords: keywordStr,
             marketplaceIds: marketplaceId,
             includedData: 'summaries,productTypes',
-            pageSize: 20,
+            pageSize: 20, // 最大値を明示
         };
         if (classificationId) queryParams.classificationIds = classificationId;
         if (nextToken) queryParams.pageToken = nextToken;
 
         try {
             await sleep(1500); 
-            console.log(`${logPrefix} Page ${page}... (Current: ${allProducts.length})`);
             const res = await spApiClient.callAPI({ method: 'GET', api_path: '/catalog/2022-04-01/items', query: queryParams });
 
             if (res && res.items && res.items.length > 0) {
@@ -146,18 +146,18 @@ async function searchProductsByKeywords(keywords, marketplaceId, userId, classif
                         });
                     }
                 }
+                console.log(`${logPrefix} Page ${page}: Collected ${allProducts.length} items.`);
                 nextToken = res.pagination?.nextToken;
             } else {
                 nextToken = undefined;
             }
             page++;
         } catch (error) {
-            console.error(`${logPrefix} Error:`, error.message);
+            console.error(`${logPrefix} Error on page ${page}:`, error.message);
             nextToken = undefined;
         }
     } while (nextToken && allProducts.length < MAX_RESULTS);
 
-    console.log(`${logPrefix} Finished. Total items: ${allProducts.length}`);
     return allProducts;
 }
 
@@ -168,7 +168,7 @@ async function getCompetitivePricingForAsins(asins, marketplaceId, userId, isCan
     const allPricing = { ...cached };
     if (missing.length === 0) return allPricing;
 
-    console.log(`[SP-API Pricing] Fetching ${missing.length} ASINs in ${marketplaceId}`);
+    console.log(`[SP-API Pricing] Requesting ${missing.length} ASINs in ${marketplaceId}`);
     const { client: spApiClient } = await getSpApiClient(marketplaceId, userId);
     const chunkSize = 20;
 
@@ -217,7 +217,7 @@ async function getCatalogItemsByAsins(asins, marketplaceId, userId, isCancelled 
     const productsByAsin = { ...cached };
     if (missing.length === 0) return uniqueAsins.map(a => productsByAsin[a]).filter(Boolean);
 
-    console.log(`[SP-API Catalog] Fetching ${missing.length} ASINs in ${marketplaceId}`);
+    console.log(`[SP-API Catalog] Requesting ${missing.length} missing ASINs in ${marketplaceId}`);
     const { client: spApiClient } = await getSpApiClient(marketplaceId, userId);
     const chunkSize = 20;
 
@@ -228,7 +228,13 @@ async function getCatalogItemsByAsins(asins, marketplaceId, userId, isCancelled 
             const res = await callApiWithRetries(spApiClient, {
                 method: 'GET',
                 api_path: '/catalog/2022-04-01/items',
-                query: { marketplaceIds: marketplaceId, identifiers: chunk.join(','), identifiersType: 'ASIN', includedData: 'summaries,productTypes' },
+                query: { 
+                    marketplaceIds: marketplaceId, 
+                    identifiers: chunk.join(','), 
+                    identifiersType: 'ASIN', 
+                    includedData: 'summaries,productTypes',
+                    pageSize: 20 // 重要：指定しないとデフォルト10件に制限される
+                },
             }, `SP-API Catalog chunk ${Math.floor(i/chunkSize)+1}`);
 
             if (res && res.items) {
@@ -243,13 +249,17 @@ async function getCatalogItemsByAsins(asins, marketplaceId, userId, isCancelled 
                     productsByAsin[item.asin] = product;
                     writeAsinCache('catalog', marketplaceId, userId, item.asin, product, CATALOG_CACHE_TTL_MS);
                 }
+                console.log(`[SP-API Catalog] Chunk ${Math.floor(i/chunkSize)+1}: Received ${res.items.length} items.`);
             }
         } catch (error) {
             console.error(`[SP-API Catalog] Chunk Error:`, error.message);
         }
         if (i + chunkSize < missing.length) await sleep(1500);
     }
-    return uniqueAsins.map(a => productsByAsin[a]).filter(Boolean);
+    
+    const finalProducts = uniqueAsins.map(a => productsByAsin[a]).filter(Boolean);
+    console.log(`[SP-API Catalog] Final product count: ${finalProducts.length}`);
+    return finalProducts;
 }
 
 async function getProductAttributesForAsins(asins, marketplaceId, userId, isCancelled = () => false) {
@@ -259,7 +269,7 @@ async function getProductAttributesForAsins(asins, marketplaceId, userId, isCanc
     const allAttributes = { ...cached };
     if (missing.length === 0) return allAttributes;
 
-    console.log(`[SP-API Attributes] Fetching ${missing.length} ASINs in ${marketplaceId}`);
+    console.log(`[SP-API Attributes] Requesting ${missing.length} ASINs in ${marketplaceId}`);
     const { client: spApiClient } = await getSpApiClient(marketplaceId, userId);
     const chunkSize = 10;
 
@@ -270,7 +280,13 @@ async function getProductAttributesForAsins(asins, marketplaceId, userId, isCanc
             const res = await callApiWithRetries(spApiClient, {
                 method: 'GET',
                 api_path: '/catalog/2022-04-01/items',
-                query: { marketplaceIds: marketplaceId, identifiers: chunk.join(','), identifiersType: 'ASIN', includedData: 'attributes,dimensions,relationships,productTypes', pageSize: 10 },
+                query: { 
+                    marketplaceIds: marketplaceId, 
+                    identifiers: chunk.join(','), 
+                    identifiersType: 'ASIN', 
+                    includedData: 'attributes,dimensions,relationships,productTypes', 
+                    pageSize: 10 
+                },
             }, `SP-API Attributes chunk ${Math.floor(i/chunkSize)+1}`);
 
             if (res && res.items) {
