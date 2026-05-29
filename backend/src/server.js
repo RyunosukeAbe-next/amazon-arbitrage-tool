@@ -695,12 +695,12 @@ apiRouter.get('/harvested-products', async (req, res) => {
         }
 
         // 総件数の取得
-        const countRes = await initDatabase.query(`SELECT COUNT(*) FROM (${queryStr}) as t`, params);
+        const countRes = await dbQuery(`SELECT COUNT(*) FROM (${queryStr}) as t`, params);
         const totalCount = parseInt(countRes.rows[0].count, 10);
 
         // データの取得
         queryStr += ` ORDER BY profit_rate DESC LIMIT ${limit} OFFSET ${offset}`;
-        const result = await initDatabase.query(queryStr, params);
+        const result = await dbQuery(queryStr, params);
 
         res.json({
             items: result.rows.map(row => ({
