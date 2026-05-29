@@ -23,7 +23,7 @@ const userManager = require('./services/user-manager');
 const listingManager = require('./services/listing-manager'); 
 const authenticate = require('./middleware/authenticate');
 const amazonAuthService = require('./services/amazon-auth-service'); 
-const { initDatabase } = require('./services/database');
+const { initDatabase, query: dbQuery } = require('./services/database');
 const searchJobManager = require('./services/search-job-manager');
 
 const app = express();

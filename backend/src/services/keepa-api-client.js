@@ -23,8 +23,11 @@ async function getASINsBySellerId(sellerId, marketplaceDomain = 'com', limit = 1
   console.log(`[Keepa] Requesting ASINs for seller: ${cleanSellerId}, Domain: ${domainId}, Limit: ${normalizedLimit}`);
 
   try {
-    // query API を使用してセラーの全ASINリストを取得
-    const response = await axios.get(`${KEEPA_API_ENDPOINT}/query?key=${apiKey}&domain=${domainId}&seller=${cleanSellerId}`);
+    // Keepa /query API は POST を使用し、body に検索条件を JSON で含める必要がある
+    const response = await axios.post(`${KEEPA_API_ENDPOINT}/query?key=${apiKey}&domain=${domainId}`, {
+      seller: [cleanSellerId],
+      sort: [["current_sales_rank", "asc"]], // 売れている順に取得
+    });
 
     if (response.data && response.data.asinList) {
       const totalFound = response.data.asinList.length;
@@ -36,7 +39,8 @@ async function getASINsBySellerId(sellerId, marketplaceDomain = 'com', limit = 1
     console.log(`[INFO] Keepa API: No ASINs found for seller ${cleanSellerId}. Response:`, JSON.stringify(response.data));
     return [];
   } catch (error) {
-    console.error('[ERROR] Keepa API:', error.response?.data || error.message);
+    const errorData = error.response?.data || error.message;
+    console.error('[ERROR] Keepa API:', JSON.stringify(errorData, null, 2));
     return [];
   }
 }
