@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import {
   Typography, Box, Table, TableBody, TableCell, TableContainer,
-  TableHead, TableRow, Paper, Button, Chip, CircularProgress, LinearProgress, IconButton, Tooltip
+  TableHead, TableRow, Paper, Button, Chip, CircularProgress, LinearProgress, IconButton, Tooltip, Modal, Alert
 } from '@mui/material';
 import DeleteIcon from '@mui/icons-material/Delete';
+import InfoIcon from '@mui/icons-material/Info';
 import api from '../../services/api';
 
 interface ListingLog {
@@ -20,11 +21,22 @@ interface ListingLog {
     summary: string;
 }
 
+interface ListingDetail {
+    asin: string;
+    sku?: string;
+    status: 'success' | 'error' | 'skipped';
+    message?: string;
+    reason?: string;
+}
+
 const ListingLogsTab: React.FC = () => {
     const [logs, setLogs] = useState<ListingLog[]>([]);
     const [loading, setLoading] = useState(false);
-    const [deleting, setDeleting] = useState<string | null>(null); // 削除中のログIDを保持
+    const [loadingDetails, setLoadingDetails] = useState(false);
+    const [deleting, setDeleting] = useState<string | null>(null);
     const [error, setError] = useState('');
+    const [selectedLogDetails, setSelectedLogDetails] = useState<ListingDetail[] | null>(null);
+    const [isDetailModalOpen, setIsDetailModalOpen] = useState(false);
 
     const fetchLogs = async () => {
         setLoading(true);
@@ -43,7 +55,6 @@ const ListingLogsTab: React.FC = () => {
         fetchLogs();
     }, []);
 
-    // processing中のログがある場合、5秒ごとに自動更新
     useEffect(() => {
         const hasProcessingJob = logs.some(log => log.status === 'processing');
         if (hasProcessingJob && !loading) {
@@ -70,6 +81,20 @@ const ListingLogsTab: React.FC = () => {
         }
     };
 
+    const handleShowDetails = async (logId: string) => {
+        setLoadingDetails(true);
+        setError('');
+        try {
+            const response = await api.get(`/listing-logs/${logId}`);
+            setSelectedLogDetails(response.data);
+            setIsDetailModalOpen(true);
+        } catch (err: any) {
+            setError(err.response?.data?.error || '詳細ログの取得に失敗しました。');
+        } finally {
+            setLoadingDetails(false);
+        }
+    };
+
     const renderStatus = (log: ListingLog) => {
         switch (log.status) {
             case 'processing':
@@ -82,6 +107,19 @@ const ListingLogsTab: React.FC = () => {
                 return <Chip label="キャンセル済" color="warning" variant="outlined" size="small" />;
             default:
                 return <Chip label={log.status} size="small" />;
+        }
+    };
+
+    const renderDetailStatus = (status: string) => {
+        switch (status) {
+            case 'success':
+                return <Chip label="成功" color="success" size="small" />;
+            case 'error':
+                return <Chip label="エラー" color="error" size="small" />;
+            case 'skipped':
+                return <Chip label="スキップ" color="warning" size="small" />;
+            default:
+                return <Chip label={status} size="small" />;
         }
     };
 
@@ -102,19 +140,19 @@ const ListingLogsTab: React.FC = () => {
                 </Button>
             </Box>
             {loading && logs.length === 0 && <LinearProgress sx={{ mb: 1 }} />}
-            {error && <Typography color="error" sx={{ my: 1 }}>{error}</Typography>}
+            {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
             <TableContainer component={Paper}>
                 <Table stickyHeader size="small">
                     <TableHead>
                         <TableRow>
-                            <TableCell sx={{width: '15%'}}>ID</TableCell>
-                            <TableCell sx={{width: '20%'}}>タイトル</TableCell>
+                            <TableCell sx={{width: '10%'}}>ID</TableCell>
+                            <TableCell sx={{width: '15%'}}>タイトル</TableCell>
                             <TableCell sx={{width: '10%'}}>ステータス</TableCell>
                             <TableCell sx={{width: '10%'}} align="right">進捗</TableCell>
                             <TableCell sx={{width: '5%'}} align="right">出品数</TableCell>
                             <TableCell sx={{width: '15%'}}>作成日時</TableCell>
                             <TableCell sx={{width: '25%'}}>摘要</TableCell>
-                            <TableCell sx={{width: '5%'}}>操作</TableCell>
+                            <TableCell sx={{width: '10%'}} align="center">操作</TableCell>
                         </TableRow>
                     </TableHead>
                     <TableBody>
@@ -138,28 +176,76 @@ const ListingLogsTab: React.FC = () => {
                                 <TableCell align="right">{log.listedProductCount}</TableCell>
                                 <TableCell>{new Date(log.createdAt).toLocaleString()}</TableCell>
                                 <TableCell>{log.summary}</TableCell>
-                                <TableCell>
-                                    {log.status !== 'completed' && (
-                                        <Tooltip title="このログを削除">
-                                            <span>
+                                <TableCell align="center">
+                                    <Box sx={{ display: 'flex', gap: 0.5, justifyContent: 'center' }}>
+                                        <Tooltip title="詳細を見る">
+                                            <IconButton
+                                                size="small"
+                                                onClick={() => handleShowDetails(log.id)}
+                                                disabled={loadingDetails}
+                                            >
+                                                <InfoIcon fontSize="small" />
+                                            </IconButton>
+                                        </Tooltip>
+                                        {log.status !== 'completed' && (
+                                            <Tooltip title="このログを削除">
                                                 <IconButton
-                                                    edge="end"
                                                     aria-label="delete"
                                                     onClick={() => handleDelete(log.id)}
                                                     disabled={deleting === log.id}
                                                     size="small"
                                                 >
-                                                    {deleting === log.id ? <CircularProgress size={20} /> : <DeleteIcon />}
+                                                    {deleting === log.id ? <CircularProgress size={20} /> : <DeleteIcon fontSize="small" />}
                                                 </IconButton>
-                                            </span>
-                                        </Tooltip>
-                                    )}
+                                            </Tooltip>
+                                        )}
+                                    </Box>
                                 </TableCell>
                             </TableRow>
                         ))}
                     </TableBody>
                 </Table>
             </TableContainer>
+
+            <Modal open={isDetailModalOpen} onClose={() => setIsDetailModalOpen(false)}>
+                <Box sx={{ 
+                    position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', 
+                    width: '80%', maxHeight: '80vh', bgcolor: 'background.paper', boxShadow: 24, p: 4,
+                    overflowY: 'auto', borderRadius: 1
+                }}>
+                    <Typography variant="h6" component="h2" gutterBottom>出品処理結果詳細</Typography>
+                    <TableContainer component={Paper} sx={{ mt: 2 }}>
+                        <Table size="small" stickyHeader>
+                            <TableHead>
+                                <TableRow>
+                                    <TableCell>ASIN</TableCell>
+                                    <TableCell>SKU</TableCell>
+                                    <TableCell>ステータス</TableCell>
+                                    <TableCell>メッセージ/理由</TableCell>
+                                </TableRow>
+                            </TableHead>
+                            <TableBody>
+                                {selectedLogDetails?.map((detail, idx) => (
+                                    <TableRow key={`${detail.asin}-${idx}`} hover>
+                                        <TableCell>{detail.asin}</TableCell>
+                                        <TableCell>{detail.sku || '-'}</TableCell>
+                                        <TableCell>{renderDetailStatus(detail.status)}</TableCell>
+                                        <TableCell>{detail.message || detail.reason || '-'}</TableCell>
+                                    </TableRow>
+                                ))}
+                                {(!selectedLogDetails || selectedLogDetails.length === 0) && (
+                                    <TableRow>
+                                        <TableCell colSpan={4} align="center">詳細データがありません。</TableCell>
+                                    </TableRow>
+                                )}
+                            </TableBody>
+                        </Table>
+                    </TableContainer>
+                    <Box sx={{ mt: 3, display: 'flex', justifyContent: 'flex-end' }}>
+                        <Button onClick={() => setIsDetailModalOpen(false)} variant="contained">閉じる</Button>
+                    </Box>
+                </Box>
+            </Modal>
         </>
     );
 };

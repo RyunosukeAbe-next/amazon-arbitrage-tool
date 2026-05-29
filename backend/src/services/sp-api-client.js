@@ -483,7 +483,7 @@ async function getCatalogItemAttributes(asin, marketplaceId, userId) {
 
 
 // (他のダミー関数は変更なし)
-async function putListingsItem(asin, sku, price, quantity, marketplaceId, userId, productType = 'GENERIC', handlingTime = 2) {
+async function putListingsItem(asin, sku, price, quantity, marketplaceId, userId, productType = 'GENERIC', handlingTime = 2, productName = null, brand = null) {
     // 優先順位: 1. 引数の productType (カタログAPI由来), 2. 'GENERIC' (フォールバック)
     // ただし 'PRODUCT' は抽象的すぎてエラーになりやすいため避ける
     const typeToUse = (productType && productType !== 'PRODUCT' && productType !== 'N/A') ? productType : 'GENERIC'; 
@@ -505,9 +505,65 @@ async function putListingsItem(asin, sku, price, quantity, marketplaceId, userId
     const numericQuantity = Math.max(1, parseInt(quantity, 10) || 1);
     const numericHandlingTime = Math.max(1, parseInt(handlingTime, 10) || 2);
 
-    console.log(`SP-API Listing: SKU=${sku}, Qty=${numericQuantity}, Price=${numericPrice}, LeadTime=${numericHandlingTime}`);
+    console.log(`SP-API Listing: SKU=${sku}, Qty=${numericQuantity}, Price=${numericPrice}, LeadTime=${numericHandlingTime}, Name=${productName}`);
 
     try {
+        const attributes = {
+            merchant_suggested_asin: [
+                {
+                    value: asin,
+                    marketplace_id: marketplaceId
+                }
+            ],
+            condition_type: [
+                {
+                    value: "new_new",
+                    marketplace_id: marketplaceId
+                }
+            ],
+            purchasable_offer: [
+                {
+                    currency: marketplaceId === 'ATVPDKIKX0DER' ? 'USD' : 'JPY',
+                    our_price: [
+                        {
+                            schedule: [
+                                {
+                                    value_with_tax: numericPrice
+                                }
+                            ]
+                        }
+                    ],
+                    marketplace_id: marketplaceId
+                }
+            ],
+            fulfillment_availability: [
+                {
+                    fulfillment_channel_code: "DEFAULT",
+                    quantity: numericQuantity,
+                    lead_time_to_ship_max_days: numericHandlingTime,
+                    marketplace_id: marketplaceId
+                }
+            ]
+        };
+
+        // 商品名とブランド名があれば追加（不完全な出品の解消用）
+        if (productName) {
+            attributes.item_name = [
+                {
+                    value: productName,
+                    marketplace_id: marketplaceId
+                }
+            ];
+        }
+        if (brand && brand !== 'N/A') {
+            attributes.brand = [
+                {
+                    value: brand,
+                    marketplace_id: marketplaceId
+                }
+            ];
+        }
+
         const result = await spApiClient.callAPI({
             method: 'PUT',
             api_path: `/listings/2021-08-01/items/${sellingPartnerId}/${sku}`,
@@ -516,45 +572,9 @@ async function putListingsItem(asin, sku, price, quantity, marketplaceId, userId
             },
             body: {
                 productType: typeToUse, 
-                // 既存のASINに対して「オファー（価格と在庫）」のみを更新することを明示
-                requirements: 'LISTING_OFFER_ONLY', 
-                attributes: {
-                    merchant_suggested_asin: [
-                        {
-                            value: asin,
-                            marketplace_id: marketplaceId
-                        }
-                    ],
-                    condition_type: [
-                        {
-                            value: "new_new",
-                            marketplace_id: marketplaceId
-                        }
-                    ],
-                    purchasable_offer: [
-                        {
-                            currency: marketplaceId === 'ATVPDKIKX0DER' ? 'USD' : 'JPY',
-                            our_price: [
-                                {
-                                    schedule: [
-                                        {
-                                            value_with_tax: numericPrice
-                                        }
-                                    ]
-                                }
-                            ],
-                            marketplace_id: marketplaceId
-                        }
-                    ],
-                    fulfillment_availability: [
-                        {
-                            fulfillment_channel_code: "DEFAULT",
-                            quantity: numericQuantity,
-                            lead_time_to_ship_max_days: numericHandlingTime,
-                            marketplace_id: marketplaceId
-                        }
-                    ]
-                }
+                // 商品詳細を含む場合は 'LISTING'、オファーのみなら 'LISTING_OFFER_ONLY'
+                requirements: productName ? 'LISTING' : 'LISTING_OFFER_ONLY', 
+                attributes: attributes
             }
         });
         

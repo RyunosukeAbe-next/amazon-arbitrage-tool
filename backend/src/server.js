@@ -438,7 +438,7 @@ apiRouter.post('/download-csv', async (req, res) => {
 });
 
 apiRouter.post('/listing', async (req, res) => {
-    const { asin, price, quantity, marketplaceId, productType } = req.body;
+    const { asin, price, quantity, marketplaceId, productType, productName, brand } = req.body;
     const userId = req.user.userId;
     if (!asin || !price || !quantity || !marketplaceId) return res.status(400).json({ error: '情報不足' });
     try {
@@ -456,7 +456,19 @@ apiRouter.post('/listing', async (req, res) => {
         const leadTimeBuffer = settings.leadTimeBuffer || 3;
         const calculatedLeadTime = (jpInfo.leadTime || 2) + leadTimeBuffer;
 
-        const result = await putListingsItem(asin, skuToUse, price, quantity, marketplaceId, userId, productType || 'GENERIC', calculatedLeadTime);
+        let finalProductName = productName;
+        let finalBrand = brand;
+
+        // 商品名やブランドが不足している場合は日本側から取得を試みる
+        if (!finalProductName || !finalBrand) {
+            const catalogInfo = await getCatalogItemsByAsins([asin], JP_MARKETPLACE_ID, userId);
+            if (catalogInfo && catalogInfo[0]) {
+                finalProductName = finalProductName || catalogInfo[0].productName;
+                finalBrand = finalBrand || catalogInfo[0].brand;
+            }
+        }
+
+        const result = await putListingsItem(asin, skuToUse, price, quantity, marketplaceId, userId, productType || 'GENERIC', calculatedLeadTime, finalProductName, finalBrand);
         
         if (result.status === 'INCOMPLETE') {
             try {
@@ -552,7 +564,7 @@ apiRouter.post('/bulk-listing-from-asins', async (req, res) => {
                 const leadTimeBuffer = settings.leadTimeBuffer || 3;
                 const calculatedLeadTime = (jpPriceInfo.leadTime || 2) + leadTimeBuffer;
 
-                const result = await putListingsItem(product.asin, skuToUse, listingPrice, quantityToUse, marketplaceId, userId, product.productType, calculatedLeadTime);
+                const result = await putListingsItem(product.asin, skuToUse, listingPrice, quantityToUse, marketplaceId, userId, product.productType, calculatedLeadTime, product.productName, product.brand);
                 
                 if (result.status === 'SUCCESS') {
                     if (isUpdate) {
@@ -587,6 +599,16 @@ apiRouter.get('/listing-logs', async (req, res) => {
     try {
         const logs = await listingLogger.getListingLogs(req.user.userId);
         res.json(logs);
+    } catch (error) {
+        res.status(500).json({ error: 'エラー' });
+    }
+});
+
+apiRouter.get('/listing-logs/:logId', async (req, res) => {
+    try {
+        const details = await listingLogger.getListingLogDetails(req.user.userId, req.params.logId);
+        if (!details) return res.status(404).json({ error: '出品ログが見つかりません。' });
+        res.json(details);
     } catch (error) {
         res.status(500).json({ error: 'エラー' });
     }
