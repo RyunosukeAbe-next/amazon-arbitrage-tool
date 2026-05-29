@@ -677,7 +677,7 @@ apiRouter.get('/research-logs/:logId', async (req, res) => {
 apiRouter.get('/harvested-products', async (req, res) => {
     const userId = req.user.userId;
     const { page = 1, search = '', minProfitRate = 0 } = req.query;
-    const limit = 50;
+    const limit = 200; // 50から200に拡大
     const offset = (parseInt(page, 10) - 1) * limit;
 
     try {

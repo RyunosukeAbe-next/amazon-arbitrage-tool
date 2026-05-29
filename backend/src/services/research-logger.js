@@ -3,87 +3,10 @@ const path = require('path');
 const { readJsonFile, updateJsonFile, writeJsonFileAtomic } = require('./json-file-store');
 const { isDatabaseEnabled, query: dbQuery } = require('./database');
 
-const DATA_DIR = process.env.DATA_DIR || path.resolve(__dirname, '../../');
-const CONFIG_DIR = path.join(DATA_DIR, 'config');
-const LOGS_DIR_NAME = 'research_logs';
+const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '../../data');
 
-/**
- * ユーザーごとのリサーチログディレクトリのパスを取得
- */
 function getLogsDir(userId) {
-    if (!userId) throw new Error('ユーザーIDが必要です。');
-    return path.join(CONFIG_DIR, userId, LOGS_DIR_NAME);
-}
-
-/**
- * ユーザーごとのメタデータファイル(logs.json)のパスを取得
- */
-function getMetaFilePath(userId) {
-    return path.join(getLogsDir(userId), 'logs.json');
-}
-
-/**
- * リサーチログのメタデータを取得
- */
-async function getResearchLogs(userId) {
-    if (isDatabaseEnabled()) {
-        const result = await dbQuery(
-            `SELECT id, created_at AS "createdAt", search_type AS "searchType", query, result_count AS "resultCount", meta
-             FROM research_logs
-             WHERE user_id = $1
-             ORDER BY created_at DESC`,
-            [userId]
-        );
-        return result.rows.map(({ meta, ...row }) => ({ ...(meta || {}), ...row }));
-    }
-
-    const metaFile = getMetaFilePath(userId);
-    const logs = await readJsonFile(metaFile, []);
-    // 新しい順にソートして返す
-    return logs.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-}
-
-/**
- * 特定のリサーチログの詳細（商品リスト）を取得
- */
-function paginateDetails(details, options = {}) {
-    if (!options || (options.limit === undefined && options.offset === undefined)) {
-        return details;
-    }
-
-    const items = Array.isArray(details) ? details : [];
-    const limit = Math.min(Math.max(parseInt(options.limit, 10) || 100, 1), 500);
-    const offset = Math.max(parseInt(options.offset, 10) || 0, 0);
-    return {
-        items: items.slice(offset, offset + limit),
-        total: items.length,
-        limit,
-        offset,
-    };
-}
-
-async function getResearchLogDetails(userId, logId, options = {}) {
-    if (!logId) throw new Error('ログIDが必要です。');
-
-    if (isDatabaseEnabled()) {
-        const result = await dbQuery(
-            'SELECT details FROM research_logs WHERE user_id = $1 AND id = $2',
-            [userId, logId]
-        );
-        const details = result.rows[0]?.details || null;
-        return details ? paginateDetails(details, options) : null;
-    }
-
-    const logFile = path.join(getLogsDir(userId), `${logId}.json`);
-    try {
-        const details = await readJsonFile(logFile);
-        return paginateDetails(details, options);
-    } catch (error) {
-        if (error.code === 'ENOENT') {
-            return null; // ログが見つからない
-        }
-        throw error;
-    }
+    return path.join(DATA_DIR, 'research_logs', userId);
 }
 
 /**
@@ -101,127 +24,104 @@ async function saveResearchLog(userId, searchInfo, results) {
     };
 
     if (isDatabaseEnabled()) {
-        // 1. リサーチログ本体を保存
+        console.log(`[ResearchLogger] Saving log ${logId} with ${results.length} items to DB...`);
+        // 1. リサーチログ本体を保存 (detailsに全結果を格納)
         await dbQuery(
-            `INSERT INTO research_logs (
-                user_id, id, created_at, search_type, query, result_count, meta, details
-             )
+            `INSERT INTO research_logs (user_id, id, created_at, search_type, query, result_count, meta, details)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-            [
-                userId,
-                newLogMeta.id,
-                newLogMeta.createdAt,
-                newLogMeta.searchType,
-                newLogMeta.query,
-                newLogMeta.resultCount,
-                JSON.stringify(newLogMeta),
-                JSON.stringify(results)
-            ]
+            [userId, logId, newLogMeta.createdAt, searchInfo.searchType, searchInfo.query, results.length, JSON.stringify(newLogMeta), JSON.stringify(results)]
         );
 
         // 2. 商品ライブラリ (harvested_products) へ Upsert
-        console.log(`[ResearchLogger] Upserting ${results.length} products to library...`);
-        for (const product of results) {
+        console.log(`[ResearchLogger] Upserting ${results.length} items to Product Library...`);
+        for (const p of results) {
             try {
                 await dbQuery(
-                    `INSERT INTO harvested_products (
-                        user_id, asin, product_name, brand, category, weight_kg, us_price, jp_price, 
-                        us_seller_count, jp_seller_count, profit_jpy, profit_rate, is_excluded, 
-                        exclusion_reason, last_harvested_at, data
-                    )
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW(), $15)
-                    ON CONFLICT (user_id, asin) DO UPDATE SET
-                        product_name = EXCLUDED.product_name,
-                        brand = EXCLUDED.brand,
-                        category = EXCLUDED.category,
-                        weight_kg = EXCLUDED.weight_kg,
-                        us_price = EXCLUDED.us_price,
-                        jp_price = EXCLUDED.jp_price,
-                        us_seller_count = EXCLUDED.us_seller_count,
-                        jp_seller_count = EXCLUDED.jp_seller_count,
-                        profit_jpy = EXCLUDED.profit_jpy,
-                        profit_rate = EXCLUDED.profit_rate,
-                        is_excluded = EXCLUDED.is_excluded,
-                        exclusion_reason = EXCLUDED.exclusion_reason,
-                        last_harvested_at = NOW(),
-                        data = EXCLUDED.data`,
-                    [
-                        userId,
-                        product.asin,
-                        product.productName,
-                        product.brand,
-                        product.category,
-                        product.weightKg || product.weight,
-                        product.usPrice,
-                        product.jpPrice,
-                        product.usSellerCount,
-                        product.jpSellerCount,
-                        product.profitJpy,
-                        product.profitRate,
-                        product.isExcluded,
-                        product.exclusionReason,
-                        JSON.stringify(product)
-                    ]
+                    `INSERT INTO harvested_products (user_id, asin, product_name, brand, category, weight_kg, us_price, jp_price, us_seller_count, jp_seller_count, profit_jpy, profit_rate, is_excluded, exclusion_reason, last_harvested_at, data)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW(), $15)
+                     ON CONFLICT (user_id, asin) DO UPDATE SET
+                        product_name = EXCLUDED.product_name, brand = EXCLUDED.brand, category = EXCLUDED.category,
+                        weight_kg = EXCLUDED.weight_kg, us_price = EXCLUDED.us_price, jp_price = EXCLUDED.jp_price,
+                        us_seller_count = EXCLUDED.us_seller_count, jp_seller_count = EXCLUDED.jp_seller_count,
+                        profit_jpy = EXCLUDED.profit_jpy, profit_rate = EXCLUDED.profit_rate,
+                        is_excluded = EXCLUDED.is_excluded, exclusion_reason = EXCLUDED.exclusion_reason,
+                        last_harvested_at = NOW(), data = EXCLUDED.data`,
+                    [userId, p.asin, p.productName, p.brand, p.category, p.weightKg || p.weight, p.usPrice, p.jpPrice, p.usSellerCount, p.jpSellerCount, p.profitJpy, p.profitRate, p.isExcluded, p.exclusionReason, JSON.stringify(p)]
                 );
-            } catch (err) {
-                console.error(`[ResearchLogger] Failed to upsert ASIN ${product.asin}:`, err.message);
+            } catch (e) {
+                // 個別のエラーはログを出して続行
+                console.error(`[ResearchLogger] Error upserting ASIN ${p.asin}:`, e.message);
             }
         }
-        
         return newLogMeta;
     }
 
     const logsDir = getLogsDir(userId);
-    // (以下、JSONファイルベースの処理は変更なし)
-
-    // 1. 詳細な結果を保存
-    const logDetailFile = path.join(logsDir, `${logId}.json`);
-    await writeJsonFileAtomic(logDetailFile, results);
-
-    // 2. メタデータを更新
-    const metaFile = getMetaFilePath(userId);
-    await updateJsonFile(metaFile, [], logs => [newLogMeta, ...logs]);
-
+    await fs.mkdir(logsDir, { recursive: true });
+    await writeJsonFileAtomic(path.join(logsDir, `${logId}.json`), results);
+    await updateJsonFile(path.join(logsDir, 'index.json'), (index = []) => [newLogMeta, ...index]);
     return newLogMeta;
 }
 
 /**
- * リサーチログを削除
+ * ユーザーのリサーチログ一覧を取得
  */
-async function deleteResearchLog(userId, logId) {
-    if (!logId) throw new Error('ログIDが必要です。');
-
+async function getResearchLogs(userId) {
     if (isDatabaseEnabled()) {
         const result = await dbQuery(
-            'DELETE FROM research_logs WHERE user_id = $1 AND id = $2',
+            'SELECT id, created_at as "createdAt", search_type as "searchType", query, result_count as "resultCount", meta FROM research_logs WHERE user_id = $1 ORDER BY created_at DESC',
+            [userId]
+        );
+        return result.rows.map(row => ({
+            ...row,
+            ...(typeof row.meta === 'string' ? JSON.parse(row.meta) : row.meta)
+        }));
+    }
+
+    try {
+        return await readJsonFile(path.join(getLogsDir(userId), 'index.json')) || [];
+    } catch (error) {
+        return [];
+    }
+}
+
+/**
+ * 特定のリサーチログの詳細を取得
+ */
+async function getResearchLogDetails(userId, logId) {
+    if (isDatabaseEnabled()) {
+        console.log(`[ResearchLogger] Fetching details for ${logId}`);
+        const result = await dbQuery(
+            'SELECT details FROM research_logs WHERE user_id = $1 AND id = $2',
             [userId, logId]
         );
-        return result.rowCount > 0;
+        if (result.rows.length === 0) return null;
+        let details = result.rows[0].details;
+        if (typeof details === 'string') details = JSON.parse(details);
+        return details;
     }
-    
-    const metaFile = getMetaFilePath(userId);
-    let deleted = false;
 
-    await updateJsonFile(metaFile, [], logs => {
-        const updatedLogs = logs.filter(log => log.id !== logId);
-        deleted = updatedLogs.length < logs.length;
-        return updatedLogs;
-    });
-    
-    if (deleted) {
-        // 詳細ファイルを削除
-        const logDetailFile = path.join(getLogsDir(userId), `${logId}.json`);
-        try {
-            await fs.unlink(logDetailFile);
-        } catch (error) {
-            // ファイルがなくてもエラーにしない
-            if (error.code !== 'ENOENT') {
-                console.error(`ログファイル (${logDetailFile}) の削除に失敗しました:`, error);
-            }
-        }
-        return true; // 削除成功
+    try {
+        return await readJsonFile(path.join(getLogsDir(userId), `${logId}.json`));
+    } catch (error) {
+        return null;
     }
-    return false; // 該当ログなし
+}
+
+async function deleteResearchLog(userId, logId) {
+    if (isDatabaseEnabled()) {
+        await dbQuery('DELETE FROM research_logs WHERE user_id = $1 AND id = $2', [userId, logId]);
+        return true;
+    }
+
+    const logsDir = getLogsDir(userId);
+    await updateJsonFile(path.join(logsDir, 'index.json'), (index = []) => index.filter(l => l.id !== logId));
+    try {
+        await fs.unlink(path.join(logsDir, `${logId}.json`));
+        return true;
+    } catch (error) {
+        return false;
+    }
 }
 
 module.exports = {
