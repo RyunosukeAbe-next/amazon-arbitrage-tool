@@ -226,7 +226,7 @@ apiRouter.delete('/amazon/disconnect', async (req, res) => {
 });
 
 async function runProductSearch(userId, params, options = {}) {
-  const { searchType, query, classificationId } = params;
+  const { searchType, query, classificationId, limit } = params;
   const isCancelled = options.isCancelled || (() => false);
   const updateProgress = options.updateProgress || (() => {});
 
@@ -238,7 +238,7 @@ async function runProductSearch(userId, params, options = {}) {
   let spApiProducts = [];
   let asins = [];
 
-  updateProgress('検索条件を処理しています。');
+  updateProgress('検索条件を分析中...');
 
   if (searchType === 'keyword') {
     const keywords = Array.isArray(query) ? query : String(query).split(',');
@@ -248,16 +248,20 @@ async function runProductSearch(userId, params, options = {}) {
     }
   } else if (searchType === 'seller') {
     const sellerId = String(query);
-    asins = await getASINsBySellerId(sellerId, 'com', settings.keepaSellerAsinLimit);
+    const searchLimit = parseInt(limit, 10) || settings.keepaSellerAsinLimit || 1000;
+    updateProgress(`セラー ${sellerId} から ASIN を収穫中... (上限: ${searchLimit}件)`);
+    asins = await getASINsBySellerId(sellerId, 'com', searchLimit);
     if (isCancelled()) throw new Error('検索がキャンセルされました。');
+    
     if (asins.length > 0) {
-      updateProgress(`${asins.length}件のASINの商品情報を取得しています。`);
+      updateProgress(`${asins.length}件のASINが見つかりました。商品情報を取得中...`);
+      // getCatalogItemsByAsins 内部でチャンク処理と進捗ログ出力が行われます
       spApiProducts = await getCatalogItemsByAsins(asins, US_MARKETPLACE_ID, userId, isCancelled);
     }
   } else if (searchType === 'asin') {
     asins = Array.isArray(query) ? query : String(query).split(/[\s,]+/);
     if (asins.length > 0) {
-      updateProgress(`${asins.length}件のASINの商品情報を取得しています。`);
+      updateProgress(`${asins.length}件のASINの商品情報を取得中...`);
       spApiProducts = await getCatalogItemsByAsins(asins, US_MARKETPLACE_ID, userId, isCancelled);
     }
   } else {
@@ -269,7 +273,10 @@ async function runProductSearch(userId, params, options = {}) {
   let finalResults = [];
   if (spApiProducts.length > 0) {
     const pricingAsins = spApiProducts.map(product => product.asin);
-    updateProgress(`${pricingAsins.length}件の価格・属性情報を取得しています。`);
+    const total = pricingAsins.length;
+    updateProgress(`${total}件の商品について、価格・属性・利益を計算中...`);
+
+    // 効率化のため、一括で取得（内部でチャンク処理される）
     const [usPricing, jpPricing, attributes] = await Promise.all([
       getCompetitivePricingForAsins(pricingAsins, US_MARKETPLACE_ID, userId, isCancelled),
       getCompetitivePricingForAsins(pricingAsins, JP_MARKETPLACE_ID, userId, isCancelled),
@@ -278,12 +285,13 @@ async function runProductSearch(userId, params, options = {}) {
 
     if (isCancelled()) throw new Error('検索がキャンセルされました。');
 
-    finalResults = spApiProducts.map(product => {
+    finalResults = spApiProducts.map((product, index) => {
       const productAsin = String(product.asin).trim().toUpperCase();
       const usPriceInfo = usPricing[productAsin] || { price: 0, sellerCount: 0 };
       const jpPriceInfo = jpPricing[productAsin] || { price: 0, sellerCount: 0 };
       const productAttributes = attributes[productAsin] || {
         weight: null,
+        weightKg: null,
         weightDisplay: 'N/A',
         volume: null,
         category: 'N/A',
@@ -299,17 +307,24 @@ async function runProductSearch(userId, params, options = {}) {
         jpSellerCount: jpPriceInfo.sellerCount, 
         ...productAttributes 
       };
+      
       const profitResult = calculateProfit(combinedProduct, settings);
       const exclusionInfo = isExcluded(combinedProduct, settings, profitResult);
-      return { ...combinedProduct, ...profitResult, isExcluded: exclusionInfo.excluded, exclusionReason: exclusionInfo.reason };
+      
+      return { 
+        ...combinedProduct, 
+        ...profitResult, 
+        isExcluded: exclusionInfo.excluded, 
+        exclusionReason: exclusionInfo.reason 
+      };
     });
   }
 
   if (isCancelled()) throw new Error('検索がキャンセルされました。');
 
-  updateProgress('リサーチログを保存しています。');
+  updateProgress(`収穫完了: ${finalResults.length}件。データベースへ保存中...`);
   const logMeta = await researchLogger.saveResearchLog(userId, { searchType, query, classificationId: classificationId || null }, finalResults);
-  return { message: `${logMeta.resultCount}件の商品が見つかりました。ログに保存しました。`, log: logMeta, products: finalResults };
+  return { message: `${logMeta.resultCount}件の商品を収穫しました。`, log: logMeta, products: finalResults };
 }
 
 apiRouter.get('/search', async (req, res) => {

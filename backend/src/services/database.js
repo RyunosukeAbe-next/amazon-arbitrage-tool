@@ -155,9 +155,37 @@ async function initDatabase() {
 
     CREATE INDEX IF NOT EXISTS idx_listing_logs_user_status_created
       ON listing_logs (user_id, status, created_at DESC);
+
+    -- 商品ライブラリテーブル（収穫済み商品の集約）
+    CREATE TABLE IF NOT EXISTS harvested_products (
+      user_id TEXT NOT NULL,
+      asin TEXT NOT NULL,
+      product_name TEXT,
+      brand TEXT,
+      category TEXT,
+      weight_kg NUMERIC,
+      volume_cm3 NUMERIC,
+      us_price NUMERIC DEFAULT 0,
+      jp_price NUMERIC DEFAULT 0,
+      us_seller_count INTEGER DEFAULT 0,
+      jp_seller_count INTEGER DEFAULT 0,
+      profit_jpy NUMERIC,
+      profit_rate NUMERIC,
+      is_excluded BOOLEAN DEFAULT false,
+      exclusion_reason TEXT,
+      last_harvested_at TIMESTAMPTZ DEFAULT NOW(),
+      data JSONB NOT NULL DEFAULT '{}'::jsonb,
+      PRIMARY KEY (user_id, asin)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_harvested_products_user_profit
+      ON harvested_products (user_id, profit_rate DESC);
+    
+    CREATE INDEX IF NOT EXISTS idx_harvested_products_user_category
+      ON harvested_products (user_id, category);
   `);
 
-  console.log('[Database] PostgreSQL persistence initialized.');
+  console.log('[Database] PostgreSQL persistence initialized with Harvested Products table.');
 }
 
 module.exports = {

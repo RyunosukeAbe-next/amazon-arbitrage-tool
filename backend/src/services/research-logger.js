@@ -101,6 +101,7 @@ async function saveResearchLog(userId, searchInfo, results) {
     };
 
     if (isDatabaseEnabled()) {
+        // 1. リサーチログ本体を保存
         await dbQuery(
             `INSERT INTO research_logs (
                 user_id, id, created_at, search_type, query, result_count, meta, details
@@ -117,10 +118,61 @@ async function saveResearchLog(userId, searchInfo, results) {
                 JSON.stringify(results)
             ]
         );
+
+        // 2. 商品ライブラリ (harvested_products) へ Upsert
+        console.log(`[ResearchLogger] Upserting ${results.length} products to library...`);
+        for (const product of results) {
+            try {
+                await dbQuery(
+                    `INSERT INTO harvested_products (
+                        user_id, asin, product_name, brand, category, weight_kg, us_price, jp_price, 
+                        us_seller_count, jp_seller_count, profit_jpy, profit_rate, is_excluded, 
+                        exclusion_reason, last_harvested_at, data
+                    )
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW(), $15)
+                    ON CONFLICT (user_id, asin) DO UPDATE SET
+                        product_name = EXCLUDED.product_name,
+                        brand = EXCLUDED.brand,
+                        category = EXCLUDED.category,
+                        weight_kg = EXCLUDED.weight_kg,
+                        us_price = EXCLUDED.us_price,
+                        jp_price = EXCLUDED.jp_price,
+                        us_seller_count = EXCLUDED.us_seller_count,
+                        jp_seller_count = EXCLUDED.jp_seller_count,
+                        profit_jpy = EXCLUDED.profit_jpy,
+                        profit_rate = EXCLUDED.profit_rate,
+                        is_excluded = EXCLUDED.is_excluded,
+                        exclusion_reason = EXCLUDED.exclusion_reason,
+                        last_harvested_at = NOW(),
+                        data = EXCLUDED.data`,
+                    [
+                        userId,
+                        product.asin,
+                        product.productName,
+                        product.brand,
+                        product.category,
+                        product.weightKg || product.weight,
+                        product.usPrice,
+                        product.jpPrice,
+                        product.usSellerCount,
+                        product.jpSellerCount,
+                        product.profitJpy,
+                        product.profitRate,
+                        product.isExcluded,
+                        product.exclusionReason,
+                        JSON.stringify(product)
+                    ]
+                );
+            } catch (err) {
+                console.error(`[ResearchLogger] Failed to upsert ASIN ${product.asin}:`, err.message);
+            }
+        }
+        
         return newLogMeta;
     }
 
     const logsDir = getLogsDir(userId);
+    // (以下、JSONファイルベースの処理は変更なし)
 
     // 1. 詳細な結果を保存
     const logDetailFile = path.join(logsDir, `${logId}.json`);
