@@ -1,5 +1,5 @@
 const SpApi = require('amazon-sp-api');
-const amazonAuthService = require('./amazon-auth-service'); // ★ 追加
+const amazonAuthService = require('./amazon-auth-service'); 
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 const CACHE_MAX_ENTRIES = Number(process.env.SPAPI_CACHE_MAX_ENTRIES || 5000);
@@ -36,17 +36,12 @@ function setCachedValue(key, value, ttlMs) {
 function readAsinCache(scope, asins, marketplaceId, userId) {
     const cached = {};
     const missing = [];
-
     for (const asin of asins) {
         const key = makeCacheKey(scope, userId, marketplaceId, asin);
         const value = getCachedValue(key);
-        if (value === undefined) {
-            missing.push(asin);
-        } else if (value !== null) {
-            cached[asin] = value;
-        }
+        if (value === undefined) missing.push(asin);
+        else if (value !== null) cached[asin] = value;
     }
-
     return { cached, missing };
 }
 
@@ -64,62 +59,28 @@ async function callApiWithRetries(spApiClient, request, label, maxRetries = 3) {
             const status = error.response?.status || error.statusCode;
             const retryable = !status || status === 429 || status >= 500;
             console.warn(`${label} failed on attempt ${attempt}/${maxRetries}: ${error.message}`);
-            if (!retryable || attempt === maxRetries) {
-                break;
-            }
-            await sleep(1500 * attempt);
+            if (!retryable || attempt === maxRetries) break;
+            await sleep(2000 * attempt);
         }
     }
     throw lastError;
 }
 
-// isAccessTokenExpired の実装
-function isAccessTokenExpired(authData) {
-    if (!authData.accessToken || !authData.issuedAt || !authData.expiresIn) {
-        return true;
-    }
-    const now = Date.now();
-    const expiryTime = authData.issuedAt + (authData.expiresIn * 1000);
-    const buffer = 5 * 60 * 1000; // 5分前のバッファ
-    return now > (expiryTime - buffer);
-}
-
-/**
- * SP-APIクライアントを初期化し、返す
- * @param {string} marketplaceId マーケットプレイスID
- * @param {string} userId ユーザーID
- * @param {object} options オプション (refreshTokenの直接指定など)
- * @returns {SpApi} SP-APIクライアントインスタンス
- */
 async function getSpApiClient(marketplaceId, userId, options = {}) {
     const { refreshToken: manualRefreshToken, skipSellerIdCheck = false } = options;
-    
     let authData = null;
     if (!manualRefreshToken) {
-        // marketplaceId を渡して、正しいマーケットプレイスの認証情報をロードする
         authData = await amazonAuthService.loadUserAmazonAuth(userId, marketplaceId);
-        if (!authData) {
-            throw new Error(`User ${userId} has not linked their Amazon account for marketplace ${marketplaceId}.`);
-        }
+        if (!authData) throw new Error(`User ${userId} has not linked Amazon for ${marketplaceId}.`);
     }
-
     const refreshToken = manualRefreshToken || authData.refreshToken;
     const sellingPartnerId = authData?.sellingPartnerId;
+    if (!refreshToken) throw new Error(`User ${userId} missing refresh token.`);
+    if (!skipSellerIdCheck && !sellingPartnerId) throw new Error(`User ${userId} missing selling partner ID.`);
 
-    if (!refreshToken) {
-        throw new Error(`User ${userId} is missing refresh token.`);
-    }
-
-    if (!skipSellerIdCheck && !sellingPartnerId) {
-        throw new Error(`User ${userId} is missing selling partner ID.`);
-    }
-
-    // 日本 (A1VC38T7YXB528) は 'fe' (Far East), 米国 (ATVPDKIKX0DER) は 'na' (North America)
     const isJP = marketplaceId === 'A1VC38T7YXB528';
-    const spApiRegion = isJP ? 'fe' : 'na';
-    
     const spApiConfig = {
-        region: spApiRegion,
+        region: isJP ? 'fe' : 'na',
         credentials: {
             SELLING_PARTNER_APP_CLIENT_ID: process.env.SELLING_PARTNER_APP_CLIENT_ID,
             SELLING_PARTNER_APP_CLIENT_SECRET: process.env.SELLING_PARTNER_APP_CLIENT_SECRET,
@@ -128,595 +89,151 @@ async function getSpApiClient(marketplaceId, userId, options = {}) {
             AWS_SELLING_PARTNER_ROLE: process.env.SPAPI_ROLE_ARN,
         },
         refresh_token: refreshToken,
+        endpoint: isJP ? 'https://sellingpartnerapi-fe.amazon.com' : 'https://sellingpartnerapi-na.amazon.com'
     };
-
-    if (isJP) {
-        spApiConfig.endpoint = 'https://sellingpartnerapi-fe.amazon.com';
-    } else {
-        spApiConfig.endpoint = 'https://sellingpartnerapi-na.amazon.com';
-    }
-
-    console.log(`[getSpApiClient] Initializing SP-API client for Region: ${spApiRegion}, Marketplace: ${marketplaceId}, User: ${userId}`);
-
-    return {
-        client: new SpApi(spApiConfig),
-        sellingPartnerId: sellingPartnerId
-    };
+    console.log(`[SP-API] Init Client for ${marketplaceId} (User: ${userId})`);
+    return { client: new SpApi(spApiConfig), sellingPartnerId };
 }
 
-/**
- * リフレッシュトークンを使用して Amazon からセラーID (Merchant ID) を取得する
- */
 async function getSellerId(userId, refreshToken) {
-    console.log(`[getSellerId] Attempting to fetch Seller ID from Amazon API for User: ${userId}`);
-    
-    // 米国リージョンを使用して Sellers API を叩く (Sellers API はリージョン間で共通の情報が取れる)
-    const { client: spApiClient } = await getSpApiClient('ATVPDKIKX0DER', userId, {
-        refreshToken,
-        skipSellerIdCheck: true
-    });
-
+    const { client: spApiClient } = await getSpApiClient('ATVPDKIKX0DER', userId, { refreshToken, skipSellerIdCheck: true });
     try {
-        const res = await spApiClient.callAPI({
-            method: 'GET',
-            api_path: '/sellers/v1/marketplaceParticipations',
-        });
-
-        // 最初の参加情報から sellerId を取得
+        const res = await spApiClient.callAPI({ method: 'GET', api_path: '/sellers/v1/marketplaceParticipations' });
         const sellerId = res.payload?.[0]?.sellerId || res[0]?.sellerId;
-        
-        if (!sellerId) {
-            console.error('[getSellerId] API response did not contain sellerId:', JSON.stringify(res));
-            return null;
-        }
-
-        console.log(`[getSellerId] Successfully resolved Seller ID: ${sellerId}`);
-        return sellerId;
+        return sellerId || null;
     } catch (error) {
-        console.error('[getSellerId] Failed to fetch marketplace participations:', error.response?.data || error.message);
+        console.error('[getSellerId] Error:', error.message);
         return null;
     }
 }
 
-/**
- * キーワードで商品を検索する
- * @param {string[]} keywords 検索キーワードの配列
- * @param {string} marketplaceId 検索対象のマーケットプレイスID
- * @param {function} isCancelled キャンセルチェック関数
- * @returns {Promise<object[]>} 商品情報の配列
- */
 async function searchProductsByKeywords(keywords, marketplaceId, userId, classificationId = null, isCancelled = () => false) {
-    let logPrefix = `SP-API Client (Keywords: '${keywords}'`;
-    if (classificationId) {
-        logPrefix += `, Classification: '${classificationId}'`;
-    }
-    logPrefix += `):`;
-    console.log(`${logPrefix} Searching in marketplace '${marketplaceId}'`);
-    
+    let logPrefix = `[SP-API Search: '${keywords}']`;
+    console.log(`${logPrefix} Starting in ${marketplaceId}`);
     const { client: spApiClient } = await getSpApiClient(marketplaceId, userId);
     let allProducts = [];
     let nextToken = undefined;
     const seenAsins = new Set();
-    const seenTokens = new Set();
-    const MAX_RESULTS = 1000;
+    const MAX_RESULTS = 2500; 
     let page = 1;
 
     do {
-        if (isCancelled()) {
-            console.log(`${logPrefix} Search cancelled by client.`);
-            break;
-        }
-
+        if (isCancelled()) break;
         const queryParams = {
             keywords: keywords.join(','),
             marketplaceIds: marketplaceId,
-            includedData: 'summaries',
+            includedData: 'summaries,productTypes',
             pageSize: 20,
         };
-
-        if (classificationId) {
-            queryParams.classificationIds = classificationId;
-        }
-
-        if (nextToken) {
-            queryParams.pageToken = nextToken;
-        }
+        if (classificationId) queryParams.classificationIds = classificationId;
+        if (nextToken) queryParams.pageToken = nextToken;
 
         try {
-            await sleep(1000); 
-            
-            console.log(`${logPrefix} Fetching page ${page}... (Total: ${allProducts.length})`);
-            const res = await spApiClient.callAPI({
-                method: 'GET',
-                api_path: '/catalog/2022-04-01/items',
-                query: queryParams,
-            });
+            await sleep(1500); 
+            console.log(`${logPrefix} Page ${page}... (Current: ${allProducts.length})`);
+            const res = await spApiClient.callAPI({ method: 'GET', api_path: '/catalog/2022-04-01/items', query: queryParams });
 
-            if (res.items && res.items.length > 0) {
-                const products = res.items
-                    .filter(item => {
-                        if (!item.asin || seenAsins.has(item.asin)) {
-                            return false;
-                        }
+            if (res && res.items && res.items.length > 0) {
+                for (const item of res.items) {
+                    if (item.asin && !seenAsins.has(item.asin)) {
                         seenAsins.add(item.asin);
-                        return true;
-                    })
-                    .map(item => ({
-                        asin: item.asin,
-                        productName: item.summaries?.[0]?.itemName || 'N/A',
-                        brand: item.summaries?.[0]?.brand || 'N/A',
-                    }));
-                allProducts = allProducts.concat(products);
-            }
-            
-            nextToken = res.pagination?.nextToken;
-            if (nextToken && seenTokens.has(nextToken)) {
-                console.warn(`${logPrefix} Same pagination token was returned again. Stopping to avoid duplicate loop.`);
+                        const pTypeObj = item.productTypes?.[0];
+                        allProducts.push({
+                            asin: item.asin,
+                            productName: item.summaries?.[0]?.itemName || 'N/A',
+                            brand: item.summaries?.[0]?.brand || 'N/A',
+                            productType: (pTypeObj && typeof pTypeObj === 'object') ? pTypeObj.productType : (pTypeObj || 'PRODUCT'),
+                        });
+                    }
+                }
+                nextToken = res.pagination?.nextToken;
+            } else {
                 nextToken = undefined;
-            } else if (nextToken) {
-                seenTokens.add(nextToken);
             }
             page++;
-
         } catch (error) {
-            console.error(`${logPrefix} ページネーション処理中にエラーが発生しました:`, error);
+            console.error(`${logPrefix} Error:`, error.message);
             nextToken = undefined;
         }
-
     } while (nextToken && allProducts.length < MAX_RESULTS);
-    
-    const finalResults = allProducts.slice(0, MAX_RESULTS);
-    console.log(`${logPrefix} Found ${finalResults.length} products in total.`);
-    return finalResults;
+
+    console.log(`${logPrefix} Finished. Total items: ${allProducts.length}`);
+    return allProducts;
 }
 
-/**
- * 単一ASINの全オファー（出品者一覧）から最安値を取得する（フォールバック用）
- */
-async function getLowestOfferPrice(spApiClient, asin, marketplaceId) {
-    try {
-        console.log(`[Pricing Fallback] Calling getItemOffers for ASIN ${asin} in ${marketplaceId}...`);
-        const res = await spApiClient.callAPI({
-            method: 'GET',
-            api_path: `/products/pricing/v0/items/${asin}/offers`,
-            query: {
-                MarketplaceId: marketplaceId,
-                ItemCondition: 'New',
-            },
-        });
-
-        if (res && res.Offers) {
-            console.log(`[Pricing Fallback] Received ${res.Offers.length} raw offers for ASIN ${asin}`);
-            if (res.Offers.length > 0) {
-                // デバッグ用に最初のオファーのコンディションを出力
-                console.log(`[Pricing Fallback] First raw offer details - Condition: ${res.Offers[0].Condition}, SubCondition: ${res.Offers[0].SubCondition}`);
-                
-                // Newコンディションのオファーのみフィルタリングし、最安値を計算（ListingPrice + Shipping）
-                // APIは小文字の 'new' を返す場合があるため、toLowerCase() で比較する
-                const newOffers = res.Offers.filter(offer => {
-                    const subCond = (offer.SubCondition || '').toLowerCase();
-                    const cond = (offer.Condition || '').toLowerCase();
-                    return subCond === 'new' || cond === 'new';
-                });
-                console.log(`[Pricing Fallback] Found ${newOffers.length} 'New' offers after filtering.`);
-                
-                if (newOffers.length > 0) {
-                    // LandedPrice（送料込み価格）でソートして最安値を取得
-                    newOffers.sort((a, b) => {
-                        const priceA = (a.ListingPrice?.Amount || 0) + (a.Shipping?.Amount || 0);
-                        const priceB = (b.ListingPrice?.Amount || 0) + (b.Shipping?.Amount || 0);
-                        return priceA - priceB;
-                    });
-                    const lowestOffer = newOffers[0];
-                    const lowestPrice = (lowestOffer.ListingPrice?.Amount || 0) + (lowestOffer.Shipping?.Amount || 0);
-                    return { price: lowestPrice, sellerCount: newOffers.length };
-                }
-            }
-        } else {
-             console.log(`[Pricing Fallback] No Offers array in response for ASIN ${asin}. Raw response keys:`, Object.keys(res || {}));
-        }
-        return null;
-    } catch (error) {
-        // 400エラー等（該当ASINのオファー取得不可）はログを出して握りつぶす
-        console.warn(`[Pricing Fallback] Failed to get offers for ASIN ${asin} in ${marketplaceId}:`, error.message);
-        if (error.response && error.response.data) {
-             console.warn(`[Pricing Fallback Error Data]:`, JSON.stringify(error.response.data));
-        }
-        return null;
-    }
-}
-
-/**
- * 複数のASINの競合価格情報を取得する
- * @param {string[]} asins ASINの配列
- * @param {string} marketplaceId 取得対象のマーケットプレイスID
- * @param {function} isCancelled キャンセルチェック関数
- * @returns {Promise<object>} ASINをキーとした価格と出品者数のオブジェクト
- */
 async function getCompetitivePricingForAsins(asins, marketplaceId, userId, isCancelled = () => false) {
-    if (!asins || asins.length === 0) {
-        return {};
-    }
-    const uniqueAsins = [...new Set(asins.map(asin => String(asin).trim().toUpperCase()).filter(Boolean))];
+    if (!asins || asins.length === 0) return {};
+    const uniqueAsins = [...new Set(asins.map(a => String(a).trim().toUpperCase()))];
     const { cached, missing } = readAsinCache('pricing', uniqueAsins, marketplaceId, userId);
     const allPricing = { ...cached };
+    if (missing.length === 0) return allPricing;
 
-    if (missing.length === 0) {
-        console.log(`SP-API Pricing: Cache hit for ${uniqueAsins.length} ASINs in ${marketplaceId}`);
-        return allPricing;
-    }
-
-    console.log(`SP-API Pricing: Getting prices for ${missing.length}/${uniqueAsins.length} ASINs in ${marketplaceId}`);
-    
+    console.log(`[SP-API Pricing] Fetching ${missing.length} ASINs in ${marketplaceId}`);
     const { client: spApiClient } = await getSpApiClient(marketplaceId, userId);
-
     const chunkSize = 20;
+
     for (let i = 0; i < missing.length; i += chunkSize) {
-        if (isCancelled()) {
-            console.log(`SP-API Pricing: Process cancelled by client.`);
-            break;
-        }
+        if (isCancelled()) break;
         const chunk = missing.slice(i, i + chunkSize);
-        
         try {
             const res = await callApiWithRetries(spApiClient, {
                 method: 'GET',
                 api_path: '/products/pricing/v0/competitivePrice',
-                query: {
-                    MarketplaceId: marketplaceId,
-                    Asins: chunk.join(','),
-                    ItemType: 'Asin',
-                },
-            }, `SP-API Pricing (${marketplaceId}) chunk ${Math.floor(i / chunkSize) + 1}`);
+                query: { MarketplaceId: marketplaceId, Asins: chunk.join(','), ItemType: 'Asin' },
+            }, `SP-API Pricing chunk ${Math.floor(i/chunkSize)+1}`);
 
             if (Array.isArray(res)) {
                 for (const item of res) {
                     const asin = item.ASIN || item.asin;
                     if (!asin) continue;
-
-                    const product = item.Product;
-                    const compPricing = product?.CompetitivePricing;
+                    const compPricing = item.Product?.CompetitivePricing;
                     const compPrices = compPricing?.CompetitivePrices;
-                    const offerListings = compPricing?.NumberOfOfferListings;
-
                     let price = 0;
                     if (compPrices && compPrices.length > 0) {
-                        // LandedPrice (送料込み) を優先、なければ ListingPrice
                         const p = compPrices[0].Price;
                         price = parseFloat(p?.LandedPrice?.Amount || p?.ListingPrice?.Amount || 0);
                     }
-
-                    let sellerCount = 0;
-                    if (offerListings && offerListings.length > 0) {
-                        // New (新品) の出品者数を取得
-                        const newOffers = offerListings.find(ol => ol.condition === 'New');
-                        sellerCount = parseInt(newOffers?.Count || 0, 10);
-                    }
-
+                    const sellerCount = parseInt(compPricing?.NumberOfOfferListings?.find(ol => ol.condition === 'New')?.Count || 0, 10);
                     const pricing = { price, sellerCount, leadTime: marketplaceId === 'A1VC38T7YXB528' ? 2 : undefined };
                     allPricing[asin] = pricing;
                     writeAsinCache('pricing', marketplaceId, userId, asin, pricing, PRICING_CACHE_TTL_MS);
                 }
             }
         } catch (error) {
-            console.error(`SP-API Pricing (${marketplaceId}) のチャンク処理中にエラーが発生しました:`, error.message);
-            // 権限エラー(403)などの場合は、このチャンクのASINを0円としてマークしてリサーチを継続する
-            for (const asin of chunk) {
-                if (!allPricing[asin]) {
-                    const pricing = { price: 0, sellerCount: 0, leadTime: marketplaceId === 'A1VC38T7YXB528' ? 2 : undefined };
-                    allPricing[asin] = pricing;
-                    writeAsinCache('pricing', marketplaceId, userId, asin, pricing, PRICING_CACHE_TTL_MS);
-                }
-            }
+            console.error(`[SP-API Pricing] Chunk Error:`, error.message);
         }
-
-        if (i + chunkSize < missing.length) {
-            await sleep(1200);
-        }
+        if (i + chunkSize < missing.length) await sleep(1200);
     }
-
-    for (const asin of missing) {
-        if (!allPricing[asin] && !isCancelled()) {
-            const pricing = { price: 0, sellerCount: 0, leadTime: marketplaceId === 'A1VC38T7YXB528' ? 2 : undefined };
-            allPricing[asin] = pricing;
-            writeAsinCache('pricing', marketplaceId, userId, asin, pricing, PRICING_CACHE_TTL_MS);
-        }
+    for (const asin of uniqueAsins) {
+        if (!allPricing[asin]) allPricing[asin] = { price: 0, sellerCount: 0 };
     }
-    
-    console.log(`SP-API Pricing: Found prices for ${Object.keys(allPricing).length} ASINs in ${marketplaceId}.`);
     return allPricing;
 }
 
-/**
- * 単一のASINの商品カタログ属性を取得する
- * @param {string} asin ASIN
- * @param {string} marketplaceId 取得対象のマーケットプレイスID
- * @returns {Promise<object | null>} 商品属性オブジェクト、見つからない場合はnull
- */
-async function getCatalogItemAttributes(asin, marketplaceId, userId) {
-    console.log(`SP-API Catalog: Getting attributes for ASIN ${asin} in ${marketplaceId}`);
-    
-    const { client: spApiClient } = await getSpApiClient(marketplaceId, userId);
-
-    try {
-        const res = await spApiClient.callAPI({
-            method: 'GET',
-            api_path: `/catalog/2022-04-01/items/${asin}`,
-            query: {
-                marketplaceIds: marketplaceId,
-                includedData: 'attributes,summaries', // summariesを追加
-            },
-        });
-
-        const attributes = {};
-        if (res.summaries && res.summaries.length > 0) {
-            attributes.productName = res.summaries[0].itemName || 'N/A';
-            attributes.brand = res.summaries[0].brand || 'N/A';
-        }
-
-        if (res.attributes && res.attributes.item_package_weight) {
-            const weightData = res.attributes.item_package_weight[0];
-            if (weightData && weightData.value > 0) {
-                attributes.weight = {
-                    value: weightData.value,
-                    unit: weightData.unit,
-                };
-            }
-        }
-        
-        if (Object.keys(attributes).length > 0) {
-            return attributes;
-        }
-
-        console.warn(`SP-API Catalog: Could not find relevant attributes for ASIN ${asin}.`);
-        return null;
-
-    } catch (error) {
-        if (error.statusCode === 404) {
-            console.log(`SP-API Catalog: ASIN ${asin} not found in ${marketplaceId}.`);
-            return null;
-        }
-        console.error(`SP-API Catalog (${marketplaceId}) for ASIN ${asin} の呼び出し中にエラーが発生しました:`, error);
-        return null;
-    }
-}
-
-
-// (他のダミー関数は変更なし)
-async function putListingsItem(asin, sku, price, quantity, marketplaceId, userId, productType = 'GENERIC', handlingTime = 2, productName = null, brand = null) {
-    // 優先順位: 1. 引数の productType (カタログAPI由来), 2. 'GENERIC' (フォールバック)
-    // ただし 'PRODUCT' は抽象的すぎてエラーになりやすいため避ける
-    const typeToUse = (productType && productType !== 'PRODUCT' && productType !== 'N/A') ? productType : 'GENERIC'; 
-    
-    console.log(`SP-API Listing: Attempting to list ASIN ${asin} (Using Product Type: ${typeToUse}) on ${marketplaceId}`);
-    
-    if (!asin || !sku || !price || !marketplaceId) {
-        throw new Error('出品に必要な情報が不足しています。');
-    }
-    
-    const { client: spApiClient, sellingPartnerId } = await getSpApiClient(marketplaceId, userId);
-
-    if (!sellingPartnerId) {
-        throw new Error('セラーIDが取得できません。');
-    }
-
-    const numericPrice = parseFloat(price);
-    // 在庫は最低 1 を保証
-    const numericQuantity = Math.max(1, parseInt(quantity, 10) || 1);
-    const numericHandlingTime = Math.max(1, parseInt(handlingTime, 10) || 2);
-
-    console.log(`SP-API Listing: SKU=${sku}, Qty=${numericQuantity}, Price=${numericPrice}, LeadTime=${numericHandlingTime}, Name=${productName}`);
-
-    try {
-        const attributes = {
-            merchant_suggested_asin: [
-                {
-                    value: asin,
-                    marketplace_id: marketplaceId
-                }
-            ],
-            condition_type: [
-                {
-                    value: "new_new",
-                    marketplace_id: marketplaceId
-                }
-            ],
-            purchasable_offer: [
-                {
-                    currency: marketplaceId === 'ATVPDKIKX0DER' ? 'USD' : 'JPY',
-                    our_price: [
-                        {
-                            schedule: [
-                                {
-                                    value_with_tax: numericPrice
-                                }
-                            ]
-                        }
-                    ],
-                    marketplace_id: marketplaceId
-                }
-            ],
-            fulfillment_availability: [
-                {
-                    fulfillment_channel_code: "DEFAULT",
-                    quantity: numericQuantity,
-                    lead_time_to_ship_max_days: numericHandlingTime,
-                    marketplace_id: marketplaceId
-                }
-            ]
-        };
-
-        // 商品名とブランド名があれば追加（不完全な出品の解消用）
-        if (productName) {
-            attributes.item_name = [
-                {
-                    value: productName,
-                    marketplace_id: marketplaceId
-                }
-            ];
-        }
-        if (brand && brand !== 'N/A') {
-            attributes.brand = [
-                {
-                    value: brand,
-                    marketplace_id: marketplaceId
-                }
-            ];
-        }
-
-        const result = await spApiClient.callAPI({
-            method: 'PUT',
-            api_path: `/listings/2021-08-01/items/${sellingPartnerId}/${sku}`,
-            query: {
-                marketplaceIds: [marketplaceId],
-            },
-            body: {
-                productType: typeToUse, 
-                // 商品詳細を含む場合は 'LISTING'、オファーのみなら 'LISTING_OFFER_ONLY'
-                requirements: productName ? 'LISTING' : 'LISTING_OFFER_ONLY', 
-                attributes: attributes
-            }
-        });
-        
-        console.log(`SP-API Listing: Successfully sent PUT request for ASIN ${asin} with SKU ${sku}`);
-        
-        // --- Amazonからのレスポンスを解析 ---
-        if (result && result.issues && result.issues.length > 0) {
-            console.warn(`--- LISTING ISSUES FOR ${sku} ---`);
-            const errors = result.issues.filter(issue => issue.severity === 'ERROR');
-            
-            result.issues.forEach(issue => {
-                console.warn(`[${issue.severity}] ${issue.code}: ${issue.message}`);
-            });
-            console.warn(`----------------------------------`);
-
-            // エラー（ERROR）が含まれている、またはカタログ不備（90220など）がある場合は、
-            // 呼び出し側に情報を渡して削除判断を仰ぐ
-            const hasIncompleteIssue = result.issues.some(issue => issue.code === '90220' || issue.message.includes('required but missing'));
-            
-            if (errors.length > 0 || hasIncompleteIssue) {
-                return { 
-                    status: 'INCOMPLETE', 
-                    asin, 
-                    sku, 
-                    message: 'Amazonのカタログ情報が不足しているため、出品を継続できません。', 
-                    issues: result.issues 
-                };
-            }
-        }
-        
-        return { status: 'SUCCESS', asin, sku, message: `ASIN ${asin} がSKU ${sku} で出品されました。`, apiResponse: result };
-    } catch (error) {
-        console.error('--- SP-API ERROR DEBUG START ---');
-        if (error.response) {
-            console.error('Status:', error.response.status);
-            console.error('Data:', JSON.stringify(error.response.data, null, 2));
-        } else {
-            console.error('Error Message:', error.message);
-        }
-        console.error('--- SP-API ERROR DEBUG END ---');
-        
-        let errorMsg = error.message;
-        if (error.response && error.response.data) {
-            if (error.response.data.issues) {
-                 errorMsg = error.response.data.issues.map(i => `[${i.code}] ${i.message}`).join(' / ');
-            } else if (error.response.data.errors) {
-                 errorMsg = error.response.data.errors.map(e => e.message).join(' / ');
-            }
-        }
-        throw new Error(`出品処理中にエラーが発生しました: ${errorMsg}`);
-    }
-}
-
-async function deleteListingsItem(sku, marketplaceId, userId) {
-    console.log(`SP-API Listing: Attempting to delete SKU ${sku} on ${marketplaceId}`);
-    if (!sku || !marketplaceId) {
-        throw new Error('出品削除に必要な情報が不足しています。');
-    }
-
-    const { client: spApiClient, sellingPartnerId } = await getSpApiClient(marketplaceId, userId);
-    if (!sellingPartnerId) {
-        throw new Error('セラーIDが取得できません。');
-    }
-
-    try {
-        const result = await spApiClient.callAPI({
-            method: 'DELETE',
-            // deleteListingsItem の api_path も修正
-            api_path: `/listings/2021-08-01/items/${sellingPartnerId}/${sku}`,
-            query: {
-                marketplaceIds: [marketplaceId],
-            }
-        });
-        return { status: 'SUCCESS', sku, message: `SKU ${sku} の出品が削除されました。`, apiResponse: result };
-    } catch (error) {
-        console.error(`Error deleting item with SKU ${sku}:`, error.response ? error.response.data : error.message);
-        throw new Error(`出品削除処理中にエラーが発生しました: ${error.message}`);
-    }
-}
-
-/**
- * 複数のASINの商品カタログ情報を取得する
- * @param {string[]} asins 
- * @param {string} marketplaceId 
- * @param {function} isCancelled キャンセルチェック関数
- * @returns {Promise<object[]>}
- */
 async function getCatalogItemsByAsins(asins, marketplaceId, userId, isCancelled = () => false) {
-    if (!asins || asins.length === 0) {
-        return [];
-    }
-    const uniqueAsins = [...new Set(asins.map(asin => String(asin).trim().toUpperCase()).filter(Boolean))];
+    if (!asins || asins.length === 0) return [];
+    const uniqueAsins = [...new Set(asins.map(a => String(a).trim().toUpperCase()))];
     const { cached, missing } = readAsinCache('catalog', uniqueAsins, marketplaceId, userId);
     const productsByAsin = { ...cached };
+    if (missing.length === 0) return uniqueAsins.map(a => productsByAsin[a]).filter(Boolean);
 
-    if (missing.length === 0) {
-        console.log(`SP-API Catalog: Cache hit for ${uniqueAsins.length} ASINs.`);
-        return uniqueAsins.map(asin => productsByAsin[asin]).filter(Boolean);
-    }
-
-    console.log(`SP-API Catalog: Getting item details for ${missing.length}/${uniqueAsins.length} ASINs...`);
-    
+    console.log(`[SP-API Catalog] Fetching ${missing.length} ASINs in ${marketplaceId}`);
     const { client: spApiClient } = await getSpApiClient(marketplaceId, userId);
-
-    const seenAsins = new Set();
     const chunkSize = 20;
 
     for (let i = 0; i < missing.length; i += chunkSize) {
-        if (isCancelled()) {
-            console.log('SP-API Catalog: Process cancelled by client.');
-            break;
-        }
-
+        if (isCancelled()) break;
         const chunk = missing.slice(i, i + chunkSize);
-        const chunkNumber = Math.floor(i / chunkSize) + 1;
-
         try {
             const res = await callApiWithRetries(spApiClient, {
                 method: 'GET',
                 api_path: '/catalog/2022-04-01/items',
-                query: {
-                    marketplaceIds: marketplaceId,
-                    identifiers: chunk.join(','),
-                    identifiersType: 'ASIN',
-                    includedData: 'summaries,productTypes',
-                    pageSize: 20,
-                },
-            }, `SP-API Catalog (${marketplaceId}) chunk ${chunkNumber}`);
+                query: { marketplaceIds: marketplaceId, identifiers: chunk.join(','), identifiersType: 'ASIN', includedData: 'summaries,productTypes' },
+            }, `SP-API Catalog chunk ${Math.floor(i/chunkSize)+1}`);
 
-            if (res.items && res.items.length > 0) {
+            if (res && res.items) {
                 for (const item of res.items) {
-                    if (!item.asin || seenAsins.has(item.asin)) {
-                        continue;
-                    }
-
-                    seenAsins.add(item.asin);
-
-                    // productTypes は [{ productType: '...', marketplaceId: '...' }] の形式
-                    const pTypeObj = item.productTypes?.[0];
-                    const pType = (pTypeObj && typeof pTypeObj === 'object') ? pTypeObj.productType : (pTypeObj || 'PRODUCT');
-
-                    console.log(`[Catalog] ASIN ${item.asin} resolved to ProductType: ${pType}`);
+                    const pType = item.productTypes?.[0]?.productType || 'PRODUCT';
                     const product = {
                         asin: item.asin,
                         productName: item.summaries?.[0]?.itemName || 'N/A',
@@ -728,157 +245,122 @@ async function getCatalogItemsByAsins(asins, marketplaceId, userId, isCancelled 
                 }
             }
         } catch (error) {
-            console.error(`SP-API Catalog (${marketplaceId}) chunk ${chunkNumber} の処理中にエラーが発生しました:`, error.message || error);
+            console.error(`[SP-API Catalog] Chunk Error:`, error.message);
         }
-
-        if (i + chunkSize < missing.length) {
-            await sleep(1200);
-        }
+        if (i + chunkSize < missing.length) await sleep(1500);
     }
-
-    for (const asin of missing) {
-        if (!productsByAsin[asin] && !isCancelled()) {
-            writeAsinCache('catalog', marketplaceId, userId, asin, null, CATALOG_CACHE_TTL_MS);
-        }
-    }
-
-    const allProducts = uniqueAsins.map(asin => productsByAsin[asin]).filter(Boolean);
-    console.log(`SP-API Catalog: Found item details for ${allProducts.length}/${uniqueAsins.length} ASINs.`);
-    return allProducts;
+    return uniqueAsins.map(a => productsByAsin[a]).filter(Boolean);
 }
 
 async function getProductAttributesForAsins(asins, marketplaceId, userId, isCancelled = () => false) {
-    if (!asins || asins.length === 0) {
-        return {};
-    }
-    const uniqueAsins = [...new Set(asins.map(asin => String(asin).trim().toUpperCase()).filter(Boolean))];
+    if (!asins || asins.length === 0) return {};
+    const uniqueAsins = [...new Set(asins.map(a => String(a).trim().toUpperCase()))];
     const { cached, missing } = readAsinCache('attributes', uniqueAsins, marketplaceId, userId);
     const allAttributes = { ...cached };
+    if (missing.length === 0) return allAttributes;
 
-    if (missing.length === 0) {
-        console.log(`SP-API Attributes: Cache hit for ${uniqueAsins.length} ASINs in ${marketplaceId}`);
-        return allAttributes;
-    }
-
-    console.log(`SP-API Attributes: Getting attributes for ${missing.length}/${uniqueAsins.length} ASINs in ${marketplaceId}`);
-    
+    console.log(`[SP-API Attributes] Fetching ${missing.length} ASINs in ${marketplaceId}`);
     const { client: spApiClient } = await getSpApiClient(marketplaceId, userId);
-
-    const chunkSize = 10; 
-    console.log(`SP-API Attributes: Starting harvest for ${missing.length} ASINs in chunks of ${chunkSize}...`);
+    const chunkSize = 10;
 
     for (let i = 0; i < missing.length; i += chunkSize) {
-        if (isCancelled()) {
-            console.log(`SP-API Attributes: Process cancelled by client.`);
-            break;
-        }
+        if (isCancelled()) break;
         const chunk = missing.slice(i, i + chunkSize);
-        const chunkNum = Math.floor(i / chunkSize) + 1;
-        const totalChunks = Math.ceil(missing.length / chunkSize);
-        
         try {
-            console.log(`SP-API Attributes: Fetching chunk ${chunkNum}/${totalChunks}...`);
             const res = await callApiWithRetries(spApiClient, {
                 method: 'GET',
                 api_path: '/catalog/2022-04-01/items',
-                query: {
-                    marketplaceIds: marketplaceId,
-                    identifiers: chunk.join(','),
-                    identifiersType: 'ASIN',
-                    includedData: 'attributes,dimensions,relationships,productTypes',
-                    pageSize: chunkSize,
-                },
-            }, `SP-API Attributes (${marketplaceId}) chunk ${chunkNum}`);
+                query: { marketplaceIds: marketplaceId, identifiers: chunk.join(','), identifiersType: 'ASIN', includedData: 'attributes,dimensions,relationships,productTypes', pageSize: 10 },
+            }, `SP-API Attributes chunk ${Math.floor(i/chunkSize)+1}`);
 
-                if (res && res.items && res.items.length > 0) {
-                    for (const item of res.items) {
-                        const attributes = item.attributes || {};
-                        const dimensions = item.dimensions?.[0]?.item || {};
-                        const relationships = item.relationships || [];
-
-                        let weightKg = null;
-                        let weightStr = null;
-                        if (attributes.item_package_weight) {
-                            const weightData = attributes.item_package_weight[0];
-                            if (weightData && weightData.value > 0) {
-                                const val = parseFloat(weightData.value);
-                                const unit = (weightData.unit || '').toLowerCase();
-                                if (unit.includes('pound') || unit === 'lb' || unit === 'lbs') {
-                                    weightKg = val * 0.453592;
-                                } else if (unit.includes('gram') || unit === 'g') {
-                                    weightKg = val / 1000;
-                                } else if (unit.includes('ounce') || unit === 'oz') {
-                                    weightKg = val * 0.0283495;
-                                } else {
-                                    weightKg = val;
-                                }
-                                weightKg = Math.round(weightKg * 1000) / 1000;
-                                weightStr = weightKg.toString();
-                            }
-                        }
-
-                        let volumeNumber = null;
-                        let volumeStr = null;
-                        if (dimensions.length?.value && dimensions.width?.value && dimensions.height?.value) {
-                            const l = parseFloat(dimensions.length.value);
-                            const w = parseFloat(dimensions.width.value);
-                            const h = parseFloat(dimensions.height.value);
-                            const unit = (dimensions.length.unit || '').toLowerCase();
-                            let factor = 1; 
-                            if (unit.includes('inch')) factor = 2.54;
-                            else if (unit.includes('foot')) factor = 30.48;
-                            else if (unit.includes('millimeter') || unit === 'mm') factor = 0.1;
-                            volumeNumber = Math.round((l * factor * w * factor * h * factor) * 100) / 100;
-                            volumeStr = volumeNumber.toString();
-                        }
-
-                        const pTypeObj = item.productTypes?.[0];
-                        const pType = (pTypeObj && typeof pTypeObj === 'object') ? pTypeObj.productType : (pTypeObj || 'N/A');
-                        const category = pType !== 'N/A' ? pType : ((attributes.item_classification && attributes.item_classification[0]?.value) || (attributes.product_type_name && attributes.product_type_name[0]) || 'N/A');
-                        const hasVariations = relationships.some(rel => rel.type === 'VARIATION');
-
-                        const productAttributes = {
-                            weight: weightKg,
-                            weightKg: weightKg,
-                            weightDisplay: weightStr,
-                            volume: volumeNumber,
-                            volumeNumber: volumeNumber,
-                            volumeDisplay: volumeStr,
-                            category,
-                            hasVariations,
-                        };
-                        allAttributes[item.asin] = productAttributes;
-                        writeAsinCache('attributes', marketplaceId, userId, item.asin, productAttributes, ATTRIBUTES_CACHE_TTL_MS);
+            if (res && res.items) {
+                for (const item of res.items) {
+                    const attributes = item.attributes || {};
+                    const dims = item.dimensions?.[0]?.item || {};
+                    let weightKg = null;
+                    if (attributes.item_package_weight) {
+                        const w = attributes.item_package_weight[0];
+                        const val = parseFloat(w.value);
+                        const unit = (w.unit || '').toLowerCase();
+                        if (unit.includes('pound') || unit === 'lb') weightKg = val * 0.453592;
+                        else if (unit.includes('gram') || unit === 'g') weightKg = val / 1000;
+                        else if (unit.includes('ounce') || unit === 'oz') weightKg = val * 0.0283495;
+                        else weightKg = val;
+                        weightKg = Math.round(weightKg * 1000) / 1000;
                     }
+                    let volumeNumber = null;
+                    if (dims.length?.value && dims.width?.value && dims.height?.value) {
+                        const l = parseFloat(dims.length.value), w = parseFloat(dims.width.value), h = parseFloat(dims.height.value);
+                        const u = (dims.length.unit || '').toLowerCase();
+                        let f = 1;
+                        if (u.includes('inch')) f = 2.54;
+                        else if (u.includes('foot')) f = 30.48;
+                        else if (u.includes('mm')) f = 0.1;
+                        volumeNumber = Math.round((l*f * w*f * h*f) * 100) / 100;
+                    }
+                    const productAttributes = {
+                        weight: weightKg, weightKg, weightDisplay: weightKg ? weightKg.toString() : 'N/A',
+                        volume: volumeNumber, volumeNumber, volumeDisplay: volumeNumber ? volumeNumber.toString() : 'N/A',
+                        category: item.productTypes?.[0]?.productType || 'N/A',
+                        hasVariations: item.relationships?.some(rel => rel.type === 'VARIATION') || false,
+                    };
+                    allAttributes[item.asin] = productAttributes;
+                    writeAsinCache('attributes', marketplaceId, userId, item.asin, productAttributes, ATTRIBUTES_CACHE_TTL_MS);
                 }
+            }
         } catch (error) {
-            console.error(`SP-API Attributes: Error in chunk ${chunkNum}/${totalChunks}:`, error.message);
-            // エラーが発生しても次のチャンクへ進む
+            console.error(`[SP-API Attributes] Chunk Error:`, error.message);
         }
-
-        if (i + chunkSize < missing.length) {
-            await sleep(1500); // 連続リクエストによる429エラーを回避するためのウェイト
-        }
+        if (i + chunkSize < missing.length) await sleep(1500);
     }
-
-    for (const asin of missing) {
-        if (!allAttributes[asin] && !isCancelled()) {
-            writeAsinCache('attributes', marketplaceId, userId, asin, null, ATTRIBUTES_CACHE_TTL_MS);
-        }
-    }
-    
-    console.log(`SP-API Attributes: Found attributes for ${Object.keys(allAttributes).length} ASINs in ${marketplaceId}.`);
     return allAttributes;
 }
 
+async function putListingsItem(asin, sku, price, quantity, marketplaceId, userId, productType = 'GENERIC', handlingTime = 2, productName = null, brand = null) {
+    const typeToUse = (productType && productType !== 'PRODUCT' && productType !== 'N/A') ? productType : 'GENERIC'; 
+    const { client: spApiClient, sellingPartnerId } = await getSpApiClient(marketplaceId, userId);
+    const numericPrice = parseFloat(price);
+    const numericQuantity = Math.max(1, parseInt(quantity, 10) || 1);
+    const numericHandlingTime = Math.max(1, parseInt(handlingTime, 10) || 2);
+
+    try {
+        const attributes = {
+            merchant_suggested_asin: [{ value: asin, marketplace_id: marketplaceId }],
+            condition_type: [{ value: "new_new", marketplace_id: marketplaceId }],
+            purchasable_offer: [{ currency: marketplaceId === 'ATVPDKIKX0DER' ? 'USD' : 'JPY', our_price: [{ schedule: [{ value_with_tax: numericPrice }] }], marketplace_id: marketplaceId }],
+            fulfillment_availability: [{ fulfillment_channel_code: "DEFAULT", quantity: numericQuantity, lead_time_to_ship_max_days: numericHandlingTime, marketplace_id: marketplaceId }]
+        };
+        if (productName) attributes.item_name = [{ value: productName, marketplace_id: marketplaceId }];
+        if (brand && brand !== 'N/A') attributes.brand = [{ value: brand, marketplace_id: marketplaceId }];
+
+        const result = await spApiClient.callAPI({
+            method: 'PUT',
+            api_path: `/listings/2021-08-01/items/${sellingPartnerId}/${sku}`,
+            query: { marketplaceIds: [marketplaceId] },
+            body: { productType: typeToUse, requirements: productName ? 'LISTING' : 'LISTING_OFFER_ONLY', attributes }
+        });
+        
+        if (result && result.issues) {
+            const hasError = result.issues.some(i => i.severity === 'ERROR' || i.code === '90220');
+            if (hasError) return { status: 'INCOMPLETE', asin, sku, issues: result.issues };
+        }
+        return { status: 'SUCCESS', asin, sku, apiResponse: result };
+    } catch (error) {
+        throw new Error(`Listing Error: ${error.message}`);
+    }
+}
+
+async function deleteListingsItem(sku, marketplaceId, userId) {
+    const { client: spApiClient, sellingPartnerId } = await getSpApiClient(marketplaceId, userId);
+    try {
+        const result = await spApiClient.callAPI({ method: 'DELETE', api_path: `/listings/2021-08-01/items/${sellingPartnerId}/${sku}`, query: { marketplaceIds: [marketplaceId] } });
+        return { status: 'SUCCESS', sku, apiResponse: result };
+    } catch (error) {
+        throw new Error(`Delete Error: ${error.message}`);
+    }
+}
 
 module.exports = {
-    getSellerId,
-    searchProductsByKeywords,
-    getCompetitivePricingForAsins,
-    getCatalogItemAttributes,
-    getCatalogItemsByAsins,
-    getProductAttributesForAsins,
-    putListingsItem,
-    deleteListingsItem,
+    getSellerId, searchProductsByKeywords, getCompetitivePricingForAsins,
+    getCatalogItemsByAsins, getProductAttributesForAsins, putListingsItem, deleteListingsItem,
 };
