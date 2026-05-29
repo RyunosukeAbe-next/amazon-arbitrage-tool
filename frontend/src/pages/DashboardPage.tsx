@@ -13,8 +13,9 @@ import KeywordSearchTab from '../components/dashboard/KeywordSearchTab';
 import SellerIdSearchTab from '../components/dashboard/SellerIdSearchTab';
 import AsinSearchTab from '../components/dashboard/AsinSearchTab';
 import ResearchLogsTab from '../components/dashboard/ResearchLogsTab';
-import ListingLogsTab from '../components/dashboard/ListingLogsTab'; // ★ 追加
+import ListingLogsTab from '../components/dashboard/ListingLogsTab';
 import BulkListingTab from '../components/dashboard/BulkListingTab';
+import HarvestedLibraryTab from '../components/dashboard/HarvestedLibraryTab';
 import SettingsTab from '../components/dashboard/SettingsTab';
 
 const SEARCH_QUEUE_STORAGE_KEY = 'activeSearchQueue';
@@ -245,6 +246,7 @@ const DashboardPage: React.FC = () => {
             <Tab label="セラーID検索" />
             <Tab label="ASIN検索" />
             <Tab label="リサーチログ" />
+            <Tab label="商品ライブラリ" />
             <Tab label="出品管理" />
             <Tab label="出品ログ" />
             <Tab label="設定" />
@@ -262,24 +264,17 @@ const DashboardPage: React.FC = () => {
         </TabPanel>
         <TabPanel value={currentTab} index={3}>
           <ResearchLogsTab activeJobs={searchQueue} onCancelJob={handleCancelJob} onLogsLoaded={handlePruneCompletedJobs} />
-          {completedSearchResults.length > 0 && (
-            <Box mt={4}>
-              <Typography variant="h5" component="h2" gutterBottom>
-                直近の検索結果
-              </Typography>
-              <TableContainer component={Paper}>
-                {/* ... (変更なし) */}
-              </TableContainer>
-            </Box>
-          )}
         </TabPanel>
         <TabPanel value={currentTab} index={4}>
-          <BulkListingTab />
+          <HarvestedLibraryTab />
         </TabPanel>
         <TabPanel value={currentTab} index={5}>
-          <ListingLogsTab />
+          <BulkListingTab />
         </TabPanel>
         <TabPanel value={currentTab} index={6}>
+          <ListingLogsTab />
+        </TabPanel>
+        <TabPanel value={currentTab} index={7}>
           <SettingsTab />
         </TabPanel>
       </Container>

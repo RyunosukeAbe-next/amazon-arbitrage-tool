@@ -673,6 +673,53 @@ apiRouter.get('/research-logs/:logId', async (req, res) => {
     }
 });
 
+// --- 商品ライブラリ (Harvested Products) ---
+apiRouter.get('/harvested-products', async (req, res) => {
+    const userId = req.user.userId;
+    const { page = 1, search = '', minProfitRate = 0 } = req.query;
+    const limit = 50;
+    const offset = (parseInt(page, 10) - 1) * limit;
+
+    try {
+        let queryStr = `SELECT * FROM harvested_products WHERE user_id = $1`;
+        const params = [userId];
+
+        if (search) {
+            params.push(`%${search}%`);
+            queryStr += ` AND (asin ILIKE $${params.length} OR product_name ILIKE $${params.length} OR brand ILIKE $${params.length})`;
+        }
+
+        if (minProfitRate) {
+            params.push(parseFloat(minProfitRate));
+            queryStr += ` AND profit_rate >= $${params.length}`;
+        }
+
+        // 総件数の取得
+        const countRes = await initDatabase.query(`SELECT COUNT(*) FROM (${queryStr}) as t`, params);
+        const totalCount = parseInt(countRes.rows[0].count, 10);
+
+        // データの取得
+        queryStr += ` ORDER BY profit_rate DESC LIMIT ${limit} OFFSET ${offset}`;
+        const result = await initDatabase.query(queryStr, params);
+
+        res.json({
+            items: result.rows.map(row => ({
+                ...row,
+                productName: row.product_name,
+                weightKg: row.weight_kg,
+                profitJpy: row.profit_jpy,
+                profitRate: row.profit_rate,
+                lastHarvestedAt: row.last_harvested_at,
+            })),
+            totalPages: Math.ceil(totalCount / limit),
+            totalCount
+        });
+    } catch (error) {
+        console.error('ライブラリ取得エラー:', error);
+        res.status(500).json({ error: '商品ライブラリの取得に失敗しました。' });
+    }
+});
+
 app.use('/api', apiRouter);
 
 async function startServer() {

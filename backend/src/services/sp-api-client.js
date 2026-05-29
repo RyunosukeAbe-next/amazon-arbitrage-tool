@@ -861,24 +861,6 @@ async function getProductAttributesForAsins(asins, marketplaceId, userId, isCanc
         }
     }
 
-                // リクエストしたASINのうち、レスポンスに含まれなかったものをチェック
-                const respondedAsins = new Set(res.items.map(it => it.asin));
-                const missingInResponse = chunk.filter(asin => !respondedAsins.has(asin));
-                if (missingInResponse.length > 0) {
-                console.warn(`SP-API Attributes: ${missingInResponse.length} ASINs were missing in API response: ${missingInResponse.join(', ')}`);
-                }
-                } else {
-                console.warn(`SP-API Attributes: No items returned for chunk ${Math.floor(i / chunkSize) + 1}`);
-                }
-        } catch (error) {
-            console.error(`SP-API Attributes (${marketplaceId}) のチャンク処理中にエラーが発生しました:`, error);
-        }
-
-        if (i + chunkSize < missing.length) {
-            await sleep(1200);
-        }
-    }
-
     for (const asin of missing) {
         if (!allAttributes[asin] && !isCancelled()) {
             writeAsinCache('attributes', marketplaceId, userId, asin, null, ATTRIBUTES_CACHE_TTL_MS);
