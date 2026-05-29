@@ -74,22 +74,42 @@ async function getListingLogs(userId) {
  */
 async function getListingLogDetails(userId, logId) {
     if (!logId) throw new Error('ログIDが必要です。');
+    console.log(`[ListingLogger] Fetching details for User: ${userId}, LogId: ${logId}`);
 
     if (isDatabaseEnabled()) {
-        const result = await dbQuery(
-            'SELECT details FROM listing_logs WHERE user_id = $1 AND id = $2',
-            [userId, logId]
-        );
-        return result.rows[0]?.details || null;
+        try {
+            const result = await dbQuery(
+                'SELECT details FROM listing_logs WHERE user_id = $1 AND id = $2',
+                [userId, logId]
+            );
+            if (result.rows.length === 0) {
+                console.warn(`[ListingLogger] Log not found in DB: ${logId}`);
+                return null;
+            }
+            return result.rows[0].details || [];
+        } catch (error) {
+            console.error(`[ListingLogger] DB Error fetching details:`, error);
+            throw error;
+        }
     }
 
-    const logFile = path.join(getLogsDir(userId), `${logId}.json`);
+    const logsDir = getLogsDir(userId);
+    const logFile = path.join(logsDir, `${logId}.json`);
+    console.log(`[ListingLogger] Reading details from file: ${logFile}`);
+    
     try {
-        return await readJsonFile(logFile);
+        const data = await readJsonFile(logFile);
+        if (!data) {
+             console.warn(`[ListingLogger] Detail file is empty: ${logFile}`);
+             return [];
+        }
+        return data;
     } catch (error) {
         if (error.code === 'ENOENT') {
-            return null; // ログが見つからない
+            console.warn(`[ListingLogger] Detail file not found: ${logFile}`);
+            return null; // 404の引き金
         }
+        console.error(`[ListingLogger] File read error:`, error);
         throw error;
     }
 }

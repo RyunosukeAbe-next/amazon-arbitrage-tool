@@ -791,22 +791,42 @@ async function getProductAttributesForAsins(asins, marketplaceId, userId, isCanc
                 const dimensions = item.dimensions?.[0]?.item || {};
                 const relationships = item.relationships || [];
 
-                let weightObj = null;
+                let weightKg = null;
                 let weightStr = null;
                 if (attributes.item_package_weight) {
                     const weightData = attributes.item_package_weight[0];
                     if (weightData && weightData.value > 0) {
-                        weightObj = {
-                            value: weightData.value,
-                            unit: weightData.unit,
-                        };
-                        weightStr = `${weightData.value} ${weightData.unit}`;
+                        const val = parseFloat(weightData.value);
+                        const unit = (weightData.unit || '').toLowerCase();
+                        if (unit.includes('pound') || unit === 'lb' || unit === 'lbs') {
+                            weightKg = val * 0.453592;
+                        } else if (unit.includes('gram') || unit === 'g') {
+                            weightKg = val / 1000;
+                        } else if (unit.includes('ounce') || unit === 'oz') {
+                            weightKg = val * 0.0283495;
+                        } else {
+                            weightKg = val;
+                        }
+                        weightKg = Math.round(weightKg * 1000) / 1000; // グラム単位まで保持
+                        weightStr = weightKg.toString(); // フィルターしやすいように数値のみの文字列
                     }
                 }
 
-                let volume = null;
+                let volumeNumber = null;
+                let volumeStr = null;
                 if (dimensions.length?.value && dimensions.width?.value && dimensions.height?.value) {
-                    volume = (dimensions.length.value * dimensions.width.value * dimensions.height.value).toFixed(2) + ` ${dimensions.length.unit}^3`;
+                    const l = parseFloat(dimensions.length.value);
+                    const w = parseFloat(dimensions.width.value);
+                    const h = parseFloat(dimensions.height.value);
+                    const unit = (dimensions.length.unit || '').toLowerCase();
+                    
+                    let factor = 1; // センチメートル基準
+                    if (unit.includes('inch')) factor = 2.54;
+                    else if (unit.includes('foot')) factor = 30.48;
+                    else if (unit.includes('millimeter') || unit === 'mm') factor = 0.1;
+
+                    volumeNumber = Math.round((l * factor * w * factor * h * factor) * 100) / 100;
+                    volumeStr = volumeNumber.toString();
                 }
 
                 const pTypeObj = item.productTypes?.[0];
@@ -815,9 +835,12 @@ async function getProductAttributesForAsins(asins, marketplaceId, userId, isCanc
                 const hasVariations = relationships.some(rel => rel.type === 'VARIATION');
 
                 const productAttributes = {
-                    weight: weightObj,
-                    weightDisplay: weightStr,
-                    volume,
+                    weight: weightKg, // 数値として保持
+                    weightKg: weightKg,
+                    weightDisplay: weightStr, // 数値文字列
+                    volume: volumeNumber, // 数値として保持
+                    volumeNumber: volumeNumber,
+                    volumeDisplay: volumeStr,
                     category,
                     hasVariations,
                 };

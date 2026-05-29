@@ -37,14 +37,21 @@ function calculateProfit(product, settings) {
   const amazonFeeJpy = sellingPriceJpy * (amazonFeeRate || 0.15);
 
   // 2. 国際送料の計算
-  const parseWeight = (weightInput) => {
+  const parseWeight = (weightInput, weightKg) => {
+    if (typeof weightKg === 'number' && weightKg > 0) {
+      return weightKg * 1000; // kg -> g
+    }
     if (!weightInput) return null;
 
     let value = 0;
     let unit = 'g';
 
     if (typeof weightInput === 'number') {
-      value = weightInput;
+      // 数値のみの場合、100未満ならkg、それ以上ならgと推測する（暫定ロジック）
+      if (weightInput < 100) {
+          return weightInput * 1000;
+      }
+      return weightInput;
     } else if (typeof weightInput === 'object') {
       value = Number(weightInput.value);
       unit = (weightInput.unit || 'g').toLowerCase();
@@ -79,11 +86,10 @@ function calculateProfit(product, settings) {
       case 'lbs':
         return value * 453.592;
       default:
-        // 単位不明な場合はgと仮定するが、100未満ならkgの可能性も考慮（要件により調整）
         return value;
     }
   };
-  const parsedWeightGrams = parseWeight(weight);
+  const parsedWeightGrams = parseWeight(weight, product.weightKg);
   let shippingWeightGrams = parsedWeightGrams;
   let isShippingWeightEstimated = false;
   let internationalShippingBaseCostJpy = 0;

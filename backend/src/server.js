@@ -547,7 +547,13 @@ apiRouter.post('/bulk-listing-from-asins', async (req, res) => {
             }
 
             const productAttributes = attributes[product.asin] || {};
-            const combinedProduct = { ...product, ...productAttributes, usPrice: listingPrice, jpPrice: jpPriceInfo.price };
+            const combinedProduct = { 
+                ...product, 
+                ...productAttributes, 
+                usPrice: listingPrice, 
+                jpPrice: jpPriceInfo.price,
+                weight: productAttributes.weightKg || productAttributes.weight // 数値の重量を優先
+            };
             const profitResult = calculateProfit(combinedProduct, settings);
             const exclusionInfo = isExcluded(combinedProduct, settings, profitResult);
 
@@ -564,20 +570,39 @@ apiRouter.post('/bulk-listing-from-asins', async (req, res) => {
                 const leadTimeBuffer = settings.leadTimeBuffer || 3;
                 const calculatedLeadTime = (jpPriceInfo.leadTime || 2) + leadTimeBuffer;
 
-                const result = await putListingsItem(product.asin, skuToUse, listingPrice, quantityToUse, marketplaceId, userId, product.productType, calculatedLeadTime, product.productName, product.brand);
+                const result = await putListingsItem(
+                    product.asin, 
+                    skuToUse, 
+                    listingPrice, 
+                    quantityToUse, 
+                    marketplaceId, 
+                    userId, 
+                    product.productType, 
+                    calculatedLeadTime, 
+                    product.productName, 
+                    product.brand
+                );
                 
                 if (result.status === 'SUCCESS') {
                     if (isUpdate) {
-                        // 既存データの更新（もし必要なら管理テーブルも更新）
-                        // ここではログに成功を記録
-                        detailLogs.push({ asin: product.asin, sku: skuToUse, status: 'success', message: '既存の出品を更新しました。' });
+                        detailLogs.push({ 
+                            asin: product.asin, 
+                            sku: skuToUse, 
+                            status: 'success', 
+                            message: '既存の出品を更新しました。' 
+                        });
                     } else {
                         await listingManager.addTrackedListing(userId, skuToUse, product.asin, marketplaceId, quantityToUse, listingPrice, product.productType);
                         detailLogs.push({ asin: product.asin, sku: skuToUse, status: 'success' });
                     }
                     listedCount++;
                 } else {
-                    detailLogs.push({ asin: product.asin, status: 'error', reason: result.message || 'Amazon側での処理に失敗しました（カタログ情報不足など）。' });
+                    const issuesMsg = result.issues ? result.issues.map(i => `[${i.code}] ${i.message}`).join(', ') : 'カタログ情報不足';
+                    detailLogs.push({ 
+                        asin: product.asin, 
+                        status: 'error', 
+                        reason: `${result.message || '不完全な出品'} (${issuesMsg})` 
+                    });
                 }
             } catch(e) {
                 detailLogs.push({ asin: product.asin, status: 'error', reason: e.message });
